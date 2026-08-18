@@ -1,0 +1,61 @@
+[package]
+name = "memclean"
+version = "1.0.0"
+edition = "2021"
+description = "轻量 Windows x64 内存清理工具（Rust + 原生 Win32）"
+license = "AGPL-3.0-only"
+authors = ["邱宗满 <qiuzongman@foxmail.com>"]
+repository = "https://gitee.com/qiuzongman/win-mem-cleaner"
+keywords = ["windows", "memory", "cleaner", "ram", "win32"]
+categories = ["command-line-utilities", "os::windows-apis"]
+
+[[bin]]
+name = "memclean-x64"
+path = "src/main.rs"
+
+[build-dependencies]
+winres = "0.1"
+image = { version = "0.25", default-features = false, features = ["png"] }
+ico = "0.3"
+resvg = "0.45"
+usvg = "0.45"
+tiny-skia = "0.11"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+png = "0.17"
+
+[target.'cfg(windows)'.dependencies.windows]
+version = "0.58"
+features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Memory",
+    "Win32_System_ProcessStatus",
+    "Win32_System_Registry",
+    "Win32_System_Threading",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_SystemInformation",
+    "Win32_System_SystemServices",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_Controls",
+    "Win32_UI_HiDpi",
+    "Win32_Graphics_Gdi",
+]
+
+[profile.dev]
+opt-level = 1
+
+[profile.release]
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+strip = true
+panic = "abort"
+
+[profile.release.package."*"]
+opt-level = "z"
+codegen-units = 1

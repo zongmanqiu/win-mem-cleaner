@@ -1,0 +1,13 @@
+# 编译产物（由外部 CARGO_TARGET_DIR 指定，不应出现在源码目录）
+/target/
+/build/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# 日志
+*.log
+*.dmp
