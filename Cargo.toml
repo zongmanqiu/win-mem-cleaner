@@ -17,9 +17,6 @@ path = "src/main.rs"
 winres = "0.1"
 image = { version = "0.25", default-features = false, features = ["png"] }
 ico = "0.3"
-resvg = "0.45"
-usvg = "0.45"
-tiny-skia = "0.11"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
