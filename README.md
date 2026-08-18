@@ -1,5 +1,7 @@
 # WinMemCleaner x64
 
+[**📦 立即下载 v1.0.0**](https://gitee.com/qiuzongman/win-mem-cleaner/releases/download/1.0.0/memclean_x64_1.0.0.zip)
+
 轻量级 Windows x64 内存清理工具，纯 Rust + 原生 Win32 API 实现。
 
 > 仅支持 Windows 10/11 64 位。极简设计，无技术术语，把用户当傻瓜。
