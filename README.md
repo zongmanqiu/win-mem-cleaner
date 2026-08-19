@@ -51,7 +51,7 @@ $env:CARGO_TARGET_DIR = "..\.build\target"
 cargo build --release
 ```
 
-产物：`../build/memclean-x64.exe`（约 0.4MB）
+产物：`../build/WinMemCleaner-x64.exe`（约 0.4MB）
 
 ### 测试
 

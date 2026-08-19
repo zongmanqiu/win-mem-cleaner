@@ -107,4 +107,4 @@ core ← ui
 | `image/` | 图片资源 |
 | `docs/` | 项目文档 |
 
-**对外发布时**：仅分发 `.build/memclean-x64.exe`。
+**对外发布时**：仅分发 `.build/WinMemCleaner-x64.exe`。
