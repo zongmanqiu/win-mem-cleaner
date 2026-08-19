@@ -10,7 +10,7 @@ keywords = ["windows", "memory", "cleaner", "ram", "win32"]
 categories = ["command-line-utilities", "os::windows-apis"]
 
 [[bin]]
-name = "WinMemCleaner-x64"
+name = "WinMemCleaner_x64"
 path = "src/main.rs"
 
 [build-dependencies]

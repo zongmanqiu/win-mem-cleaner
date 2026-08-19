@@ -25,12 +25,24 @@ fn main() {
     icon_dir.write(&mut ico_file).expect("failed to write ICO");
 
     // ---- 2. 用 winres 嵌入 manifest + 应用图标 ----
+    let mut res = winres::WindowsResource::new();
+    
     // 测试构建时跳过 manifest 嵌入（避免 requireAdministrator 导致测试无法运行）
     let is_test = std::env::var("CARGO_CFG_DEBUG_ASSERTIONS").is_ok();
     if !is_test {
-        let mut res = winres::WindowsResource::new();
         res.set_manifest_file("app.manifest");
-        res.set_icon(&ico_path);
-        res.compile().expect("winres compile failed");
     }
+    
+    res.set_icon(&ico_path);
+    
+    // 设置 VERSIONINFO 资源，让任务管理器显示正确的程序名称
+    res.set("FileDescription", "WinMemCleaner - 轻量内存清理工具");
+    res.set("ProductName", "WinMemCleaner");
+    res.set("ProductVersion", "1.0.0");
+    res.set("FileVersion", "1.0.0");
+    res.set("CompanyName", "邱宗满");
+    res.set("OriginalFilename", "WinMemCleaner_x64.exe");
+    res.set("InternalName", "WinMemCleaner");
+    
+    res.compile().expect("winres compile failed");
 }
