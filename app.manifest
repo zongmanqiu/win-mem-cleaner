@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
-  <assemblyIdentity version="1.0.0.0" processorArchitecture="*" name="MemCleaner" type="win32"/>
-  <description>MemCleaner - 轻量内存清理工具</description>
+  <assemblyIdentity version="1.0.1.0" processorArchitecture="*" name="WinMemCleaner" type="win32"/>
+  <description>WinMemCleaner</description>
   <!-- 启用 Common Controls 6.0（视觉样式 + ClearType 文字平滑，解决锯齿） -->
   <dependency>
     <dependentAssembly>

@@ -25,11 +25,11 @@ use windows::Win32::UI::Shell::{
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreateIconIndirect, CreatePopupMenu, CreateWindowExW, DefWindowProcW,
     DestroyIcon, DestroyMenu, DispatchMessageW, GetCursorPos, GetMessageW, GetWindowLongPtrW,
-    KillTimer, LoadIconW, PostMessageW, PostQuitMessage, RegisterClassW, SetForegroundWindow,
-    SetTimer, SetWindowLongPtrW, TrackPopupMenu, TranslateMessage, CS_DBLCLKS, GWLP_USERDATA,
-    HICON, ICONINFO, IDI_APPLICATION, MF_SEPARATOR, MF_STRING, MSG, TPM_BOTTOMALIGN,
-    TPM_LEFTALIGN, WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP, WM_COMMAND, WM_DESTROY,
-    WM_LBUTTONDBLCLK, WM_RBUTTONUP, WM_TIMER, WNDCLASSW,
+    KillTimer, LoadIconW, PostMessageW, PostQuitMessage, RegisterClassW, RegisterWindowMessageW,
+    SetForegroundWindow, SetTimer, SetWindowLongPtrW, TrackPopupMenu, TranslateMessage,
+    CS_DBLCLKS, GWLP_USERDATA, HICON, ICONINFO, IDI_APPLICATION, MF_SEPARATOR, MF_STRING,
+    MSG, TPM_BOTTOMALIGN, TPM_LEFTALIGN, WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP, WM_COMMAND,
+    WM_DESTROY, WM_LBUTTONDBLCLK, WM_RBUTTONUP, WM_TIMER, WNDCLASSW,
 };
 
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -44,6 +44,15 @@ pub const MSG_TRAY_QUIT: u32 = WM_APP + 3;
 pub const MSG_TRAY_ABOUT: u32 = WM_APP + 4;
 
 const WM_TRAY: u32 = WM_APP + 10;
+
+/// TaskbarCreated: Explorer 重启后 Windows 发送此消息，应用须重新添加托盘图标。
+static TASKBAR_CREATED: OnceLock<u32> = OnceLock::new();
+fn taskbar_created_msg() -> u32 {
+    *TASKBAR_CREATED.get_or_init(|| unsafe {
+        let name = crate::core::util::wide("TaskbarCreated");
+        RegisterWindowMessageW(windows::core::PCWSTR(name.as_ptr()))
+    })
+}
 const ID_SHOW: usize = 2001;
 const ID_CLEAN_STD: usize = 2002;
 const ID_CLEAN_DEEP: usize = 2003;
@@ -204,15 +213,12 @@ fn tick_update(hwnd: HWND) {
         let snap = mem::memory_snapshot();
         let pct = snap.phys_percent;
 
-        // 重新渲染 tooltip（每秒更新三项指标）
+        // 重新渲染 tooltip（每秒更新三项指标，分三行显示）
         let tip = format!(
-            "物理 {} / {}  虚拟 {} / {}  缓存 {} / {}",
-            mem::format_bytes(snap.phys_used),
-            mem::format_bytes(snap.phys_total),
-            mem::format_bytes(snap.page_used),
-            mem::format_bytes(snap.page_total),
-            mem::format_bytes(snap.cache_used),
-            mem::format_bytes(snap.cache_total),
+            "物理内存  {} / {}  ({}%)\n虚拟内存  {} / {}  ({}%)\n系统缓存  {} / {}  ({}%)",
+            mem::format_bytes(snap.phys_used), mem::format_bytes(snap.phys_total), snap.phys_percent,
+            mem::format_bytes(snap.page_used), mem::format_bytes(snap.page_total), snap.page_percent,
+            mem::format_bytes(snap.cache_used), mem::format_bytes(snap.cache_total), snap.cache_percent,
         );
         let tip_wide = crate::core::util::wide(&tip);
 
@@ -321,16 +327,13 @@ fn add_tray_icon(hwnd: HWND) -> bool {
         } else {
             (*st).icon
         };
-        // 构造初始 tooltip
+        // 构造初始 tooltip（三行）
         let snap = mem::memory_snapshot();
         let tip = format!(
-            "物理 {} / {}  虚拟 {} / {}  缓存 {} / {}",
-            mem::format_bytes(snap.phys_used),
-            mem::format_bytes(snap.phys_total),
-            mem::format_bytes(snap.page_used),
-            mem::format_bytes(snap.page_total),
-            mem::format_bytes(snap.cache_used),
-            mem::format_bytes(snap.cache_total),
+            "物理内存  {} / {}  ({}%)\n虚拟内存  {} / {}  ({}%)\n系统缓存  {} / {}  ({}%)",
+            mem::format_bytes(snap.phys_used), mem::format_bytes(snap.phys_total), snap.phys_percent,
+            mem::format_bytes(snap.page_used), mem::format_bytes(snap.page_total), snap.page_percent,
+            mem::format_bytes(snap.cache_used), mem::format_bytes(snap.cache_total), snap.cache_percent,
         );
         let tip_wide = crate::core::util::wide(&tip);
         let mut nid = NOTIFYICONDATAW {
@@ -369,6 +372,12 @@ unsafe extern "system" fn wnd_proc(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
+    // Explorer 重启 → 重新添加托盘图标
+    if msg == taskbar_created_msg() {
+        delete_tray_icon(hwnd);
+        let _ = add_tray_icon(hwnd);
+        return LRESULT(0);
+    }
     match msg {
         WM_TRAY => {
             let event = lparam.0 as u32;

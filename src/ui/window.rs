@@ -779,11 +779,7 @@ pub fn run(cfg: AppConfig) {
         };
         apply_ui_font(hwnd);
 
-        let title = if crate::core::mem::is_admin() {
-            "WinMemCleaner-管理员"
-        } else {
-            "WinMemCleaner-非管理员"
-        };
+        let title = "WinMemCleaner";
         let _ = SetWindowTextW(hwnd, PCWSTR(crate::core::util::wide(title).as_ptr()));
 
         let logo = load_logo_icon();
