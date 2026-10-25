@@ -5,7 +5,7 @@
 - 语言：Rust (edition 2021)
 - UI：原生 Win32 API（无框架依赖）
 - 构建：Cargo + winres（manifest/图标嵌入）
-- 平台：仅 Windows x64
+- 平台：仅 Windows 10 及以上 x64（Rust 工具链底线即 Win10；详见 README「运行环境」）
 
 ---
 
@@ -33,7 +33,7 @@ core/  ←  ui/
 |------|------|
 | `mem.rs` | 内存清理核心：进程工作集修剪、系统缓存清理、Native API 动态加载、权限提升 |
 | `config.rs` | 配置持久化：JSON 读写、默认值、sanity check |
-| `scheduler.rs` | 自动调度：定时清理 + 全屏避让 |
+| `scheduler.rs` | 自动调度：定时清理 / 内存阈值清理 + 全屏避让 |
 | `util.rs` | 工具函数：UTF-8/UTF-16 转换 |
 
 ### ui/ — 界面层
@@ -59,16 +59,16 @@ core/  ←  ui/
 ```
 启动
  ├─ 单实例互斥 → 已有实例则激活其窗口并退出
- ├─ 配置加载（%APPDATA%/memclean/config.json）
+ ├─ 配置加载（exe 同级 WinMemCleaner.json，便携不写用户目录）
  ├─ 权限提升（raise_privileges）
  └─ ui::window::run()
       ├─ 创建主窗口 + 控件
-      ├─ 启动 scheduler（后台线程定时清理）
+      ├─ 启动 scheduler（后台线程：定时清理 / 内存阈值清理）
       ├─ 启动 tray（后台线程托盘图标）
       └─ Win32 消息循环
            ├─ WM_TIMER → 刷新内存信息
            ├─ 托盘消息 → 清理/显示/退出
-           └─ 控件消息 → 保存配置/触发清理
+           └─ 控件消息 → 保存配置（主窗口没有清理按钮，手动清理只走托盘菜单）
 ```
 
 ---
@@ -79,6 +79,16 @@ core/  ←  ui/
 |------|------|------|
 | 标准 | 合并物理内存页 + 裁剪进程工作集 + 清理系统文件缓存 + 低优先级备用内存 | 温和，几乎不卡 |
 | 深度 | 标准全部 + 系统级清空工作集 + 清空 Standby + 冲刷 Modified 页 | 强力，短暂卡顿 |
+
+### 自动清理触发方式（两种互相独立，可同时生效）
+
+| 方式 | 触发条件 | 默认 |
+|------|----------|------|
+| 定时 | 每 `interval_minutes` 分钟，按 `interval_level` 清理 | 每 5 分钟 / 标准 |
+| 阈值 | 物理内存占用 > `threshold_percent`%，按 `threshold_level` 清理（触发后 60 秒静默） | 超过 85% / 深度 |
+
+> 阈值只判**物理内存**：界面上的「虚拟内存」是提交量/提交上限、「系统缓存」是实时缓存占物理内存的
+> 比例，两者都不表示内存不够用，且清空工作集与缓存也降不下提交量，参与触发只会误报。
 
 ---
 
@@ -95,4 +105,4 @@ core/  ←  ui/
 .\build\build.ps1 -Clean
 ```
 
-产物：`../build/WinMemCleaner-x64.exe`（约 0.4MB）
+产物：`../.build/WinMemCleaner_x64.exe`（约 0.4MB）

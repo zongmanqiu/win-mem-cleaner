@@ -31,13 +31,18 @@ use super::window::KEEP_FONT;
 // ---------------------------------------------------------------------------
 // 常量
 // ---------------------------------------------------------------------------
-const IDC_ABOUT_LINK: i32 = 4001;
+const IDC_ABOUT_GITEE: i32 = 4001;
+const IDC_ABOUT_GITHUB: i32 = 4002;
+const GITEE_URL: &str = "https://gitee.com/qiuzongman/win-mem-cleaner";
+const GITHUB_URL: &str = "https://github.com/zongmanqiu/win-mem-cleaner";
 
 // 二维码 PNG（由 build.rs 从 SVG 生成）
 const WECHAT_PNG: &[u8] = include_bytes!("../../image/WeChatPay.png");
 const ALIPAY_PNG: &[u8] = include_bytes!("../../image/ALiPay.png");
 
-static LINK_RECT: OnceLock<(i32, i32, i32, i32)> = OnceLock::new();
+/// 两条链接各自的客户区矩形 (x, y, w, h)，供父窗口做悬停命中测试。
+static GITEE_RECT: OnceLock<(i32, i32, i32, i32)> = OnceLock::new();
+static GITHUB_RECT: OnceLock<(i32, i32, i32, i32)> = OnceLock::new();
 static LINK_OLD_PROC: OnceLock<AtomicUsize> = OnceLock::new();
 
 // ---------------------------------------------------------------------------
@@ -53,29 +58,42 @@ unsafe extern "system" fn link_subclass_proc(
     match msg {
         0x0084 /* WM_NCHITTEST */ => LRESULT(1),
         0x0200 /* WM_MOUSEMOVE */ => {
-            use windows::Win32::UI::WindowsAndMessaging::{GetPropW, SetPropW};
-            let key = w!("hover");
-            let was_hover = GetPropW(hwnd, PCWSTR(key.as_ptr())).0;
-            if was_hover == std::ptr::null_mut() {
-                let _ = SetPropW(hwnd, PCWSTR(key.as_ptr()), windows::Win32::Foundation::HANDLE(1 as *mut _));
-                let _ = windows::Win32::Graphics::Gdi::InvalidateRect(hwnd, None, true);
-            }
+            set_hover(hwnd, true);
             old_proc(hwnd, msg, wparam, lparam)
         }
         0x0201 /* WM_LBUTTONDOWN */ => {
-            open_gitee_link();
+            let id = GetDlgCtrlID(hwnd);
+            open_url(if id == IDC_ABOUT_GITHUB { GITHUB_URL } else { GITEE_URL });
             LRESULT(0)
         }
         _ => old_proc(hwnd, msg, wparam, lparam)
     }
 }
 
-fn open_gitee_link() {
+/// 记录/清除控件上的 "hover" 属性，仅在状态翻转时重绘。
+unsafe fn set_hover(ctrl: HWND, on: bool) {
+    use windows::Win32::UI::WindowsAndMessaging::{GetPropW, SetPropW};
+    let key = w!("hover");
+    let cur = GetPropW(ctrl, PCWSTR(key.as_ptr())).0 as usize;
+    let want = on as usize;
+    if cur != want {
+        let _ = SetPropW(ctrl, PCWSTR(key.as_ptr()), windows::Win32::Foundation::HANDLE(want as *mut _));
+        let _ = windows::Win32::Graphics::Gdi::InvalidateRect(ctrl, None, true);
+    }
+}
+
+unsafe fn is_hover(ctrl: HWND) -> bool {
+    use windows::Win32::UI::WindowsAndMessaging::GetPropW;
+    let key = w!("hover");
+    GetPropW(ctrl, PCWSTR(key.as_ptr())).0 as usize != 0
+}
+
+fn open_url(url: &str) {
     unsafe {
-        let url = crate::core::util::wide("https://gitee.com/qiuzongman/win-mem-cleaner");
+        let wide = crate::core::util::wide(url);
         let _ = ShellExecuteW(
             HWND::default(), w!("open"),
-            PCWSTR(url.as_ptr()), PCWSTR::null(), PCWSTR::null(), SW_SHOWNORMAL,
+            PCWSTR(wide.as_ptr()), PCWSTR::null(), PCWSTR::null(), SW_SHOWNORMAL,
         );
     }
 }
@@ -89,8 +107,10 @@ unsafe extern "system" fn about_wndproc(
     match msg {
         WM_COMMAND => {
             let id = (wparam.0 & 0xffff) as i32;
-            if id == IDC_ABOUT_LINK {
-                open_gitee_link();
+            match id {
+                IDC_ABOUT_GITEE => open_url(GITEE_URL),
+                IDC_ABOUT_GITHUB => open_url(GITHUB_URL),
+                _ => {}
             }
             LRESULT(0)
         }
@@ -98,11 +118,8 @@ unsafe extern "system" fn about_wndproc(
             let hdc = windows::Win32::Graphics::Gdi::HDC(wparam.0 as *mut _);
             let ctrl = HWND(lparam.0 as *mut _);
             let ctrl_id = GetDlgCtrlID(ctrl);
-            if ctrl_id == IDC_ABOUT_LINK {
-                use windows::Win32::UI::WindowsAndMessaging::GetPropW;
-                let key = w!("hover");
-                let is_hover = GetPropW(ctrl, PCWSTR(key.as_ptr())).0 as usize != 0;
-                if is_hover {
+            if ctrl_id == IDC_ABOUT_GITEE || ctrl_id == IDC_ABOUT_GITHUB {
+                if is_hover(ctrl) {
                     let _ = SetTextColor(hdc, COLORREF(0x000000FF));
                 } else {
                     let _ = SetTextColor(hdc, COLORREF(0x00FF0000));
@@ -112,21 +129,16 @@ unsafe extern "system" fn about_wndproc(
             LRESULT(br.0 as isize)
         }
         0x0200 /* WM_MOUSEMOVE */ => {
-            if let Some(&(lx, ly, lw, lh)) = LINK_RECT.get() {
-                let mx = (lparam.0 & 0xFFFF) as i16 as i32;
-                let my = ((lparam.0 >> 16) & 0xFFFF) as i16 as i32;
-                let inside = mx >= lx && mx < lx + lw && my >= ly && my < ly + lh;
-                let link = super::window::dlg(hwnd, IDC_ABOUT_LINK);
-                use windows::Win32::UI::WindowsAndMessaging::{GetPropW, SetPropW};
-                let key = w!("hover");
-                let was_hover = GetPropW(link, PCWSTR(key.as_ptr())).0;
-                let is_hover_now = if inside { 1usize } else { 0usize };
-                let was_hover_val = was_hover as usize;
-                if is_hover_now != was_hover_val {
-                    let _ = SetPropW(link, PCWSTR(key.as_ptr()), windows::Win32::Foundation::HANDLE(is_hover_now as *mut _));
-                    let _ = windows::Win32::Graphics::Gdi::InvalidateRect(link, None, true);
-                }
-            }
+            let mx = (lparam.0 & 0xFFFF) as i16 as i32;
+            let my = ((lparam.0 >> 16) & 0xFFFF) as i16 as i32;
+            let inside = |r: Option<&(i32, i32, i32, i32)>| {
+                r.map(|&(lx, ly, lw, lh)| mx >= lx && mx < lx + lw && my >= ly && my < ly + lh)
+                    .unwrap_or(false)
+            };
+            let gitee = super::window::dlg(hwnd, IDC_ABOUT_GITEE);
+            let github = super::window::dlg(hwnd, IDC_ABOUT_GITHUB);
+            set_hover(gitee, inside(GITEE_RECT.get()));
+            set_hover(github, inside(GITHUB_RECT.get()));
             DefWindowProcW(hwnd, msg, wparam, lparam)
         }
         WM_DESTROY => LRESULT(0),
@@ -149,6 +161,27 @@ fn make_static_center(hwnd: HWND, text: &str, x: i32, y: i32, w: i32, h: i32, fo
         ).unwrap_or_default()
     };
     let _ = unsafe { SendMessageW(h, WM_SETFONT, WPARAM(font.0 as usize), LPARAM(1)) };
+    h
+}
+
+/// 创建一个可点击、悬停变色的下划线链接静态控件。
+unsafe fn make_link(
+    hwnd: HWND, id: i32, text: &str, x: i32, y: i32, w: i32, font: HFONT,
+) -> HWND {
+    let t = crate::core::util::wide(text);
+    let h = CreateWindowExW(
+        WINDOW_EX_STYLE(0), w!("STATIC"), PCWSTR(t.as_ptr()),
+        ws_win(0x01 /* SS_CENTER */) | WS_CHILD | WS_VISIBLE | ws_win(0x0100 /* SS_NOTIFY */),
+        x, y, w, 20, hwnd, HMENU(id as _), None, None,
+    ).unwrap_or_default();
+    let _ = SendMessageW(h, WM_SETFONT, WPARAM(font.0 as usize), LPARAM(1));
+    let old_proc = SetWindowLongPtrW(
+        h,
+        windows::Win32::UI::WindowsAndMessaging::WINDOW_LONG_PTR_INDEX(-4),
+        link_subclass_proc as *const () as isize,
+    );
+    // 两个链接控件同属 STATIC 窗口类，原始过程地址相同，只需登记一次
+    let _ = LINK_OLD_PROC.set(AtomicUsize::new(old_proc as usize));
     h
 }
 
@@ -261,26 +294,35 @@ pub fn show_about_dialog(parent: HWND) {
         let _ = SendMessageW(h_title, WM_SETFONT, WPARAM(title_font.0 as usize), LPARAM(1));
         y += 34;
 
-        // 2. Gitee 仓库链接
-        let link_text = crate::core::util::wide("Gitee仓库");
-        let mut text_size = SIZE::default();
+        // 2. 仓库链接：Gitee仓库 | GitHub仓库
         let hdc = GetDC(hwnd);
         if let Some(&fh) = KEEP_FONT.get() {
             let _ = windows::Win32::Graphics::Gdi::SelectObject(hdc, HFONT(fh as *mut _));
         }
-        let _ = windows::Win32::Graphics::Gdi::GetTextExtentPoint32W(hdc, &link_text, &mut text_size);
+        let gitee_wide = crate::core::util::wide("Gitee仓库");
+        let github_wide = crate::core::util::wide("GitHub仓库");
+        let sep_wide = crate::core::util::wide("|");
+        let mut g_size = SIZE::default();
+        let mut gh_size = SIZE::default();
+        let mut s_size = SIZE::default();
+        let _ = windows::Win32::Graphics::Gdi::GetTextExtentPoint32W(hdc, &gitee_wide, &mut g_size);
+        let _ = windows::Win32::Graphics::Gdi::GetTextExtentPoint32W(hdc, &github_wide, &mut gh_size);
+        let _ = windows::Win32::Graphics::Gdi::GetTextExtentPoint32W(hdc, &sep_wide, &mut s_size);
         let _ = ReleaseDC(hwnd, hdc);
-        let link_w = text_size.cx + 8;
-        let link_x = (content_w - link_w) / 2 + margin;
-        let h_link = CreateWindowExW(
-            WINDOW_EX_STYLE(0), w!("STATIC"), PCWSTR(link_text.as_ptr()),
-            ws_win(0x01) | WS_CHILD | WS_VISIBLE | ws_win(0x0200),
-            link_x, y, link_w, 20, hwnd, HMENU(IDC_ABOUT_LINK as _), None, None,
-        ).unwrap_or_default();
-        let _ = SendMessageW(h_link, WM_SETFONT, WPARAM(link_font.0 as usize), LPARAM(1));
-        let _ = LINK_RECT.set((link_x, y, link_w, 20));
-        let old_proc = SetWindowLongPtrW(h_link, windows::Win32::UI::WindowsAndMessaging::WINDOW_LONG_PTR_INDEX(-4), link_subclass_proc as *const () as isize);
-        let _ = LINK_OLD_PROC.set(AtomicUsize::new(old_proc as usize));
+
+        let gap = 12i32;
+        let w_gitee = g_size.cx + 4;
+        let w_github = gh_size.cx + 4;
+        let w_sep = s_size.cx;
+        let start_x = margin + (content_w - (w_gitee + gap + w_sep + gap + w_github)) / 2;
+        let x_sep = start_x + w_gitee + gap;
+        let x_github = x_sep + w_sep + gap;
+
+        make_link(hwnd, IDC_ABOUT_GITEE, "Gitee仓库", start_x, y, w_gitee, link_font);
+        let _ = GITEE_RECT.set((start_x, y, w_gitee, 20));
+        make_static_center(hwnd, "|", x_sep, y, w_sep, 20, font);
+        make_link(hwnd, IDC_ABOUT_GITHUB, "GitHub仓库", x_github, y, w_github, link_font);
+        let _ = GITHUB_RECT.set((x_github, y, w_github, 20));
         y += 44;
 
         // 3. 作者和邮箱

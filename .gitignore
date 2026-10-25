@@ -1,6 +1,9 @@
 # 编译产物（由外部 CARGO_TARGET_DIR 指定，不应出现在源码目录）
 /target/
-/build/
+# 注：build/ 是源码（构建脚本），不是产物——产物在仓库外的 .temp/ 与 .build/
+
+# 运行期配置（便携：与 exe 同级），万一在源码目录里跑 exe 也不要提交
+/WinMemCleaner.json
 
 # IDE
 .vscode/

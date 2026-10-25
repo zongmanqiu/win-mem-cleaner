@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
-  <assemblyIdentity version="1.0.1.0" processorArchitecture="*" name="WinMemCleaner" type="win32"/>
+  <assemblyIdentity version="1.1.0.0" processorArchitecture="*" name="WinMemCleaner" type="win32"/>
   <description>WinMemCleaner</description>
   <!-- 启用 Common Controls 6.0（视觉样式 + ClearType 文字平滑，解决锯齿） -->
   <dependency>
@@ -14,7 +14,8 @@
         language="*"/>
     </dependentAssembly>
   </dependency>
-  <!-- 不强制管理员：由程序内部按“管理员权限”开关决定是否提权 -->
+  <!-- 强制管理员：清空系统工作集 / 冲刷 Modified 等动作需要提权令牌，
+       故启动即由 UAC 提升（程序内 raise_privileges 只是补开特权，不做二次提权）。 -->
   <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
     <security>
       <requestedPrivileges>

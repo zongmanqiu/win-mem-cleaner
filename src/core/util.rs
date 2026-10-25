@@ -1,7 +1,5 @@
 //! 小工具函数。
 
-#![allow(dead_code)]
-
 /// 将 UTF-8 字符串转换为以 NUL 结尾的 UTF-16 宽字符向量。
 pub fn wide(s: &str) -> Vec<u16> {
     use std::ffi::OsStr;

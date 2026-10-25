@@ -1,0 +1,4 @@
+# 把编译中间产物钉在项目根 .temp/（见 AGENTS.md §一），源码树里不出现 target/。
+# 这样任何克隆者直接 `cargo build` 就合规，不必手设 CARGO_TARGET_DIR。
+[build]
+target-dir = "../.temp/target"

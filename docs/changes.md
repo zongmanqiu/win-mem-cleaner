@@ -1,6 +1,70 @@
 # 更新日志
 
-## [1.1.0] - 2026-08-18
+## [1.1.0] - 2026-10-25
+
+### 新增
+- 自动清理拆分为两种方式，互相独立、可同时生效：
+  - 方式一：每 x 分钟按 y 强度清理（默认 每 5 分钟 / 标准）
+  - 方式二：物理内存占用 > x% 时按 y 强度清理（默认 超过 85% / 深度）
+  - x 为整数输入框，y 为「标准 / 深度」下拉，用户可自行组合
+- 阈值方式触发后有 60 秒静默期，避免占用长期停留在阈值上方时反复清理；
+  同一轮两种方式都到期时，优先执行阈值方式
+- 关于对话框在「Gitee仓库」右侧以竖线间隔新增「GitHub仓库」链接
+- 配置新增 `interval_level` / `threshold_percent` / `threshold_level` 三个字段；
+  旧的单一 `level` 字段读入时自动迁移为定时强度
+
+### 改动
+- **便携化**：配置文件从 `%APPDATA%\memclean\config.json` 改到 exe 同级的 `WinMemCleaner.json`，
+  程序不再往用户目录写文件；取不到 exe 路径时宁可不存盘也不写到别处。
+  旧文件不迁移、不删除，留着的那台机器首次会以默认值起盘
+- 托盘右键菜单文案精简为：窗口 / 标准清理 / 深度清理 / 关于 / 退出
+- 清理强度下拉去掉括号提示，统一为「标准」/「深度」
+- 版本号 1.0.1 → 1.1.0（`Cargo.toml` 单一来源，同步 `app.manifest` 的 assemblyIdentity）
+- `build/build.ps1` 中间产物目录改到 `.temp/target`（原先落在仓库根目录）
+
+### 修复
+- **系统缓存读数错误**：原先读未文档化的 `NtQuerySystemInformation(SystemFileCacheInformation)`，
+  结构布局靠猜（SDK 里没有这个结构），并且拿「缓存峰值」当分母显示成"已用 / 总量"的样子。
+  现改用文档化 API `GetPerformanceInfo().SystemCache`（单位是页，乘 `PageSize`），
+  显示实时字节 + 占物理内存百分比。同机实测：旧读数 0.36 GB / "峰值" 2.61 GB，
+  文档口径实际是 4.75 GB（占物理内存 30%）——差 13 倍
+- 数值输入框的保存时机改用 `EN_KILLFOCUS`(0x0200)：此前误用 `8`（那是 `CBN_CLOSEUP`），
+  只改数字不改其它控件时设置不会落盘
+- 关于对话框链接控件改用 `SS_NOTIFY`(0x0100)：此前误写 `0x0200`（`SS_RIGHT`），文字右偏
+- 移除无调用方的 `run_manual()`，托盘清理消息直接按档位执行
+
+### 文档同步
+- README 新增「运行环境」：明确只支持 Windows 10 及以上 x64（Rust 官方对 `x86_64-pc-windows-msvc`
+  的底线就是 Win10，1.77.2 是最后一个还能跑 Win7 的版本）；构建工具链最低 1.80；
+  并写清内存阈值只判物理内存、`page_percent`（提交量/提交上限）与 `cache_percent`（实时缓存占物理内存比）的真实含义
+- `README.md`、`docs/api.md`、`docs/architecture.md`、`docs/structure.md`、`docs/testing.md`
+- 测试补至 21 个冒烟用例（阈值边界、两种方式默认值、旧字段迁移、配置落在 exe 同级）
+
+### 工程与文档（向 CurSeen 学的纪律，不搬体量只搬机制）
+- 新增 `tests/docs.rs` **文档一致性门禁**（7 条事实检查：文档存在、`docs/` 全登记、结构文档覆盖
+  每个 src 模块且点名的 `.rs` 真实存在、`main/` 根无游离文件、LICENSE 逐字、无本机路径泄漏）
+- 新增 `AGENTS.md`（工程规则全集）与 `docs/platform_notes.md`（Win32 实测库，每条带判据）
+- 新增 `.cargo/config.toml`：把编译产物钉到 `../.temp/target`，克隆者无需手设环境变量
+- `DOCS_MANIFEST.md` 升级为「何时更新 + 由谁验证」表；`docs/structure.md` 重写
+
+### 清理死代码
+- 删除 `do_clean_all` + `AllCleanResult` + `current_foreground_pid`（全仓仅定义处一次引用，
+  被 `#![allow(dead_code)]` 掩盖），`mem.rs` 625 → 570 行；随之移除其独占的
+  `GetForegroundWindow` / `GetWindowThreadProcessId` / `HWND` 导入
+- 摘除全仓 4 处 `#![allow(dead_code)]`：它对 `pub` 项本来就不起作用，却会掩盖未来的私有死代码
+  （`do_clean_all` 正是被它养烂的）。摘除后全目标编译零警告，编译器重新成为死代码的守门人
+
+### 文档与代码不符（核对时逐条查出并修正）
+- `docs/architecture.md`：数据流写「控件消息 → 保存配置/触发清理」，实际主窗口**没有清理按钮**，
+  手动清理只走托盘菜单
+- `docs/testing.md`：UI 清单写「标题栏显示 WinMemCleaner-管理员/-非管理员」，实际标题恒为
+  `WinMemCleaner`（`is_admin()` 只被测试用到，UI 不显示权限）
+- `app.manifest`：注释写「不强制管理员」，实际是 `requireAdministrator`
+- `README.md`：删掉未经验证的「运行内存 2~7MB」；技术栈表里删掉根本不存在的 `resvg/usvg` 依赖；
+  `docs/structure.md` 去掉不存在的 `*.svg` 与「二维码 PNG 由 build.rs 生成」的错误说法
+- `README.md` 头部改为双平台下载 + Gitee/GitHub 仓库链接（格式对齐 Pecia）
+
+## [1.1.0 草稿] - 2026-08-18（未单独发布，随 1.1.0 一起出货）
 
 ### 架构重构
 - 模仿 Pecia 的 `core/` ← `ui/` 分层架构
@@ -16,7 +80,7 @@
 - `docs/api.md` — API 参考文档
 - `docs/testing.md` — 测试指南
 - `docs/changes.md` — 更新日志（本文件）
-- `tests/smoke.rs` — 冒烟测试（18 个测试用例）
+- `tests/smoke.rs` — 冒烟测试
 - `DOCS_MANIFEST.md` — 文档清单
 
 ### 代码修复

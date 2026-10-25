@@ -50,10 +50,15 @@ const IDC_INFO_PAGE: i32 = 3012;
 const IDC_INFO_CACHE: i32 = 3013;
 
 const IDC_INTERVAL_EDIT: i32 = 2101;
-const IDC_COMBO_LEVEL: i32 = 2102;
+const IDC_INTERVAL_LEVEL: i32 = 2102;
+const IDC_THRESHOLD_EDIT: i32 = 2103;
+const IDC_THRESHOLD_LEVEL: i32 = 2104;
 
 const IDC_AUTOSTART: i32 = 2007;
 const IDC_FSAVOID: i32 = 2008;
+
+/// EDIT 控件失去焦点通知（winuser.h: EN_KILLFOCUS = 0x0200）。
+const EN_KILLFOCUS: i32 = 0x0200;
 
 const WIN_W: i32 = 300; // 最小宽度，运行时自动调整
 const WIN_H: i32 = 202;
@@ -355,8 +360,8 @@ fn refresh_info(hwnd: HWND) {
         IDC_INFO_CACHE,
         &format!(
             "系统缓存 {} / {}",
-            crate::core::mem::format_bytes(s.cache_used),
-            crate::core::mem::format_bytes(s.cache_total),
+            crate::core::mem::format_bytes(s.cache_bytes),
+            crate::core::mem::format_bytes(s.phys_total),
         ),
     );
 }
@@ -386,10 +391,6 @@ fn restore_self_priority(prev: PROCESS_CREATION_FLAGS) {
         let h = GetCurrentProcess();
         let _ = SetPriorityClass(h, prev);
     }
-}
-fn run_manual() {
-    let level = shared().cfg.read().map(|g| g.level).unwrap_or(2);
-    run_clean_level(level);
 }
 
 // ---------------------------------------------------------------------------
@@ -437,7 +438,9 @@ fn set_autostart(enable: bool) {
 // ---------------------------------------------------------------------------
 fn sync_ui(hwnd: HWND, c: &AppConfig) {
     set_edit(hwnd, IDC_INTERVAL_EDIT, c.interval_minutes);
-    combo_set_level(hwnd, c.level);
+    combo_set_level(hwnd, IDC_INTERVAL_LEVEL, c.interval_level);
+    set_edit(hwnd, IDC_THRESHOLD_EDIT, c.threshold_percent);
+    combo_set_level(hwnd, IDC_THRESHOLD_LEVEL, c.threshold_level);
     set_checked(hwnd, IDC_AUTOSTART, c.autostart);
     set_checked(hwnd, IDC_FSAVOID, c.fullscreen_avoid);
 }
@@ -447,7 +450,11 @@ fn save_from_ui(hwnd: HWND) {
     if let Some(v) = edit_val(hwnd, IDC_INTERVAL_EDIT) {
         c.interval_minutes = v;
     }
-    c.level = combo_level(hwnd);
+    if let Some(v) = edit_val(hwnd, IDC_THRESHOLD_EDIT) {
+        c.threshold_percent = v;
+    }
+    c.interval_level = combo_level(hwnd, IDC_INTERVAL_LEVEL);
+    c.threshold_level = combo_level(hwnd, IDC_THRESHOLD_LEVEL);
     c.autostart = checked(hwnd, IDC_AUTOSTART);
     c.fullscreen_avoid = checked(hwnd, IDC_FSAVOID);
     c.sanitize();
@@ -481,12 +488,16 @@ fn combo_set_sel(hwnd: HWND, id: i32, idx: usize) {
         let _ = SendMessageW(h, 0x014E, WPARAM(idx), LPARAM(0));
     }
 }
-fn combo_set_level(hwnd: HWND, level: u32) {
-    let idx = (level.saturating_sub(1)).min(1) as usize;
-    combo_set_sel(hwnd, IDC_COMBO_LEVEL, idx);
+fn combo_fill_level(hwnd: HWND, id: i32) {
+    combo_add_string(hwnd, id, "标准");
+    combo_add_string(hwnd, id, "深度");
 }
-fn combo_level(hwnd: HWND) -> u32 {
-    let sel = combo_sel(hwnd, IDC_COMBO_LEVEL);
+fn combo_set_level(hwnd: HWND, id: i32, level: u32) {
+    let idx = (level.saturating_sub(1)).min(1) as usize;
+    combo_set_sel(hwnd, id, idx);
+}
+fn combo_level(hwnd: HWND, id: i32) -> u32 {
+    let sel = combo_sel(hwnd, id);
     if sel == u32::MAX {
         1
     } else {
@@ -523,11 +534,11 @@ unsafe extern "system" fn wnd_proc(
         }
         WM_COMMAND => {
             let id = (wparam.0 & 0xffff) as i32;
+            let notify = (wparam.0 >> 16) as i32;
             match id {
-                IDC_COMBO_LEVEL => save_from_ui(hwnd),
-                IDC_INTERVAL_EDIT => {
-                    let notify = (wparam.0 >> 16) as i32;
-                    if notify == 8 {
+                IDC_INTERVAL_LEVEL | IDC_THRESHOLD_LEVEL => save_from_ui(hwnd),
+                IDC_INTERVAL_EDIT | IDC_THRESHOLD_EDIT => {
+                    if notify == EN_KILLFOCUS {
                         save_from_ui(hwnd);
                     }
                 }
@@ -552,12 +563,7 @@ unsafe extern "system" fn wnd_proc(
             LRESULT(0)
         }
         super::tray::MSG_TRAY_CLEAN => {
-            let lv = wparam.0 as u32;
-            if (1..=3).contains(&lv) {
-                run_clean_level(lv);
-            } else {
-                run_manual();
-            }
+            run_clean_level(wparam.0 as u32);
             LRESULT(0)
         }
         super::tray::MSG_TRAY_QUIT => {
@@ -607,7 +613,7 @@ fn create_ui(hwnd: HWND) {
     let texts = [
         format!("物理内存 {} / {}", crate::core::mem::format_bytes(s.phys_used), crate::core::mem::format_bytes(s.phys_total)),
         format!("虚拟内存 {} / {}", crate::core::mem::format_bytes(s.page_used), crate::core::mem::format_bytes(s.page_total)),
-        format!("系统缓存 {} / {}", crate::core::mem::format_bytes(s.cache_used), crate::core::mem::format_bytes(s.cache_total)),
+        format!("系统缓存 {} / {}", crate::core::mem::format_bytes(s.cache_bytes), crate::core::mem::format_bytes(s.phys_total)),
     ];
     let max_text_w = texts.iter().map(|t| measure_text_width(hwnd, t)).max().unwrap_or(160);
     let content_w = MARGIN + bar_w + bar_gap + max_text_w + MARGIN;
@@ -628,33 +634,49 @@ fn create_ui(hwnd: HWND) {
     lbl(hwnd, IDC_INFO_CACHE, text_x, y3, text_w, 16);
 
     let box_x = x;
-    let box_w = 172;
+    let box_w = win_w - MARGIN * 2;
     let box_y = y3 + row;
-    let box_h = 72;
+    let box_h = 66;
     groupbox(hwnd, 9001, box_x, box_y, box_w, box_h, "自动清理");
 
+    // 两种方式各占一行，列位置对齐：条件 / 数值 / 单位 / 强度 / 动作
+    let col_cond = box_x + 12;
+    let col_edit = box_x + 64;
+    let col_unit = box_x + 100;
+    let col_combo = box_x + 130;
+    let col_act = box_x + 192;
+
+    // 方式一：每 x 分钟，y 清理
     let row1 = box_y + 20;
-    lbl(hwnd, 9002, box_x + 12, row1, 30, 18);
-    set_text(hwnd, 9002, "间隔");
-    edt(hwnd, IDC_INTERVAL_EDIT, box_x + 48, row1 - 1, 34, 18);
-    lbl(hwnd, 9003, box_x + 86, row1, 30, 18);
+    lbl(hwnd, 9002, col_cond, row1, 48, 18);
+    set_text(hwnd, 9002, "每");
+    edt(hwnd, IDC_INTERVAL_EDIT, col_edit, row1 - 1, 32, 18);
+    lbl(hwnd, 9003, col_unit, row1, 26, 18);
     set_text(hwnd, 9003, "分钟");
+    combo(hwnd, IDC_INTERVAL_LEVEL, col_combo, row1 - 3, 58);
+    combo_fill_level(hwnd, IDC_INTERVAL_LEVEL);
+    lbl(hwnd, 9005, col_act, row1, 30, 18);
+    set_text(hwnd, 9005, "清理");
 
+    // 方式二：内存 > x %，y 清理
     let row2 = row1 + 22;
-    lbl(hwnd, 9004, box_x + 12, row2, 30, 18);
-    set_text(hwnd, 9004, "强度");
-    combo(hwnd, IDC_COMBO_LEVEL, box_x + 48, row2 - 4, box_w - 48 - 12);
-    combo_add_string(hwnd, IDC_COMBO_LEVEL, "标准");
-    combo_add_string(hwnd, IDC_COMBO_LEVEL, "深度(短暂卡顿)");
+    lbl(hwnd, 9004, col_cond, row2, 48, 18);
+    set_text(hwnd, 9004, "内存 >");
+    edt(hwnd, IDC_THRESHOLD_EDIT, col_edit, row2 - 1, 32, 18);
+    lbl(hwnd, 9006, col_unit, row2, 26, 18);
+    set_text(hwnd, 9006, "%");
+    combo(hwnd, IDC_THRESHOLD_LEVEL, col_combo, row2 - 3, 58);
+    combo_fill_level(hwnd, IDC_THRESHOLD_LEVEL);
+    lbl(hwnd, 9007, col_act, row2, 30, 18);
+    set_text(hwnd, 9007, "清理");
 
-    let r_x = box_x + box_w + 12;
-    let r_w = win_w - MARGIN - r_x;
-    chk(hwnd, IDC_FSAVOID, r_x, row1, r_w, 18, "全屏避让");
-    chk(hwnd, IDC_AUTOSTART, r_x, row2, r_w, 18, "开机启动");
+    let chk_y = box_y + box_h + 6;
+    chk(hwnd, IDC_FSAVOID, box_x, chk_y, 90, 18, "全屏避让");
+    chk(hwnd, IDC_AUTOSTART, box_x + 96, chk_y, 90, 18, "开机启动");
 
     sync_ui(hwnd, &cfg);
 
-    let win_h = box_y + box_h + MARGIN + 31;
+    let win_h = chk_y + 18 + MARGIN + 31;
     unsafe {
         let _ = SetWindowPos(hwnd, HWND_TOP, 0, 0, win_w, win_h, SWP_NOMOVE | SWP_NOZORDER);
     }

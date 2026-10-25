@@ -2,13 +2,12 @@
 //! 参考 memreduct / MemCleaner / memory_cleaner 的实现思路，用 Win32/Native API。
 
 #![allow(non_snake_case)]
-#![allow(dead_code)]
 
 use std::collections::HashSet;
 use std::mem::size_of;
 
 use windows::core::{w, PCSTR, PCWSTR};
-use windows::Win32::Foundation::{CloseHandle, HANDLE, HWND, LUID};
+use windows::Win32::Foundation::{CloseHandle, HANDLE, LUID};
 use windows::Win32::Security::{
     AdjustTokenPrivileges, LookupPrivilegeValueW, LUID_AND_ATTRIBUTES, SE_PRIVILEGE_ENABLED,
     TOKEN_ADJUST_PRIVILEGES, TOKEN_PRIVILEGES, TOKEN_QUERY,
@@ -17,8 +16,10 @@ use windows::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
 };
 use windows::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress};
+use windows::Win32::System::Memory::SetSystemFileCacheSize;
 use windows::Win32::System::ProcessStatus::{
-    EmptyWorkingSet, GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS,
+    EmptyWorkingSet, GetPerformanceInfo, GetProcessMemoryInfo, PERFORMANCE_INFORMATION,
+    PROCESS_MEMORY_COUNTERS,
 };
 use windows::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
 use windows::Win32::System::Threading::{
@@ -29,13 +30,11 @@ use windows::Win32::UI::Shell::{
     SHQueryUserNotificationState, QUNS_BUSY, QUNS_PRESENTATION_MODE,
     QUNS_RUNNING_D3D_FULL_SCREEN,
 };
-use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId};
 
 // ---------------------------------------------------------------------------
 // 常量：未文档化的 Native API
 // ---------------------------------------------------------------------------
 const SYSTEM_MEMORY_LIST_INFORMATION_CLASS: i32 = 80; // 0x50
-const SYSTEM_FILE_CACHE_INFORMATION_EX_CLASS: i32 = 81; // 0x51
 const MEMORY_EMPTY_WORKING_SETS: u32 = 2;
 const MEMORY_FLUSH_MODIFIED_LIST: u32 = 3;
 const MEMORY_PURGE_STANDBY_LIST: u32 = 4;
@@ -125,6 +124,24 @@ pub fn avail_bytes() -> u64 {
     mem_info().ullAvailPhys
 }
 
+/// 系统缓存实时字节数（≈ 可回收的缓存 / 备用内存）。
+///
+/// 用文档化 API `GetPerformanceInfo`——它的每个数值字段单位都是「页」，故乘 `PageSize`。
+/// 原先读的是未文档化的 `NtQuerySystemInformation(SystemFileCacheInformation)`，结构布局靠猜：
+/// 同机实测 0.36 GB，而文档口径是 4.75 GB，差 13 倍，故弃用。
+pub fn system_cache_bytes() -> u64 {
+    unsafe {
+        let mut pi = PERFORMANCE_INFORMATION {
+            cb: size_of::<PERFORMANCE_INFORMATION>() as u32,
+            ..Default::default()
+        };
+        if GetPerformanceInfo(&mut pi, pi.cb).is_err() {
+            return 0;
+        }
+        (pi.SystemCache as u64).saturating_mul(pi.PageSize.max(1) as u64)
+    }
+}
+
 /// 格式化字节为可读字符串。
 pub fn format_bytes(bytes: u64) -> String {
     let units = ["B", "KB", "MB", "GB", "TB"];
@@ -178,21 +195,6 @@ fn issue_memory_list_command(command: u32) -> bool {
     status == 0
 }
 
-// 系统文件缓存结构（未文档化）
-#[repr(C)]
-#[derive(Default)]
-struct SystemFileCacheInformation {
-    current_size: usize,
-    peak_size: usize,
-    page_fault_count: u32,
-    minimum_working_set: usize,
-    maximum_working_set: usize,
-    current_size_including_transition_in_pages: usize,
-    peak_size_including_transition_in_pages: usize,
-    transition_repurpose_count: u32,
-    flags: u32,
-}
-
 fn measure_avail_delta(action: impl FnOnce() -> bool) -> (bool, u64) {
     let before = avail_bytes();
     let ok = action();
@@ -208,52 +210,19 @@ pub fn clear_system_working_sets() -> bool {
     issue_memory_list_command(MEMORY_EMPTY_WORKING_SETS)
 }
 
-/// 清空系统文件缓存。
+/// 清空系统文件缓存：把缓存上限临时压到 0 逼系统回收，随后恢复为不限。
+///
+/// `SetSystemFileCacheSize` 自 Windows 7 起就是 kernel32 的导出，故直接用文档化绑定。
+/// 原先那条「取不到导出就用 NtSetSystemInformation 兜底」的分支已删：它把猜出来的
+/// 未文档化结构发给 class 80（那是 `SystemMemoryListInformation`，不是文件缓存），
+/// 在本项目支持的 Win10+ 上永不可达，一旦真跑到反而会发出错误的内存列表命令。
 pub fn clear_system_file_cache() -> bool {
     let _ = enable_privilege("SeIncreaseQuotaPrivilege");
-    // 使用文档化 API SetSystemFileCacheSize 清空缓存
-    // 传入 0, 0 会禁用文件缓存，系统会自动回收
-    type SetSysCacheSizeFn = unsafe extern "system" fn(usize, usize, u32) -> bool;
     unsafe {
-        let module = GetModuleHandleW(w!("kernel32.dll")).ok().unwrap_or_default();
-        let proc = GetProcAddress(module, PCSTR(c"SetSystemFileCacheSize".as_ptr().cast()));
-        if let Some(f) = proc {
-            let f: SetSysCacheSizeFn = std::mem::transmute(f);
-            // 先设为最小，再恢复默认
-            let ok = f(0, 0, 0);
-            // 恢复默认（让系统自动管理）
-            f(0, usize::MAX, 0);
-            return ok;
-        }
+        let ok = SetSystemFileCacheSize(0, 0, 0).is_ok();
+        let _ = SetSystemFileCacheSize(0, usize::MAX, 0); // 恢复默认，交回系统管理
+        ok
     }
-    // 回退：用 NtSetSystemInformation
-    let Some(f) = nt_set_system_information() else {
-        return false;
-    };
-    let mut info = SystemFileCacheInformation {
-        minimum_working_set: 0,
-        maximum_working_set: 0,
-        current_size: 0,
-        ..Default::default()
-    };
-    let status = unsafe {
-        f(
-            80, // SystemFileCacheInformation（非 Ex）
-            &mut info as *mut SystemFileCacheInformation as *mut _,
-            size_of::<SystemFileCacheInformation>() as u32,
-        )
-    };
-    // 恢复默认
-    info.minimum_working_set = 0;
-    info.maximum_working_set = usize::MAX;
-    let _ = unsafe {
-        f(
-            80,
-            &mut info as *mut SystemFileCacheInformation as *mut _,
-            size_of::<SystemFileCacheInformation>() as u32,
-        )
-    };
-    status == 0
 }
 
 /// 冲刷 Modified 页列表（脏页写盘后回收）。
@@ -372,18 +341,6 @@ pub struct TrimReport {
     pub process_freed_bytes: u64,
 }
 
-pub fn current_foreground_pid() -> Option<u32> {
-    unsafe {
-        let hwnd: HWND = GetForegroundWindow();
-        if hwnd.0.is_null() {
-            return None;
-        }
-        let mut pid = 0u32;
-        let _ = GetWindowThreadProcessId(hwnd, Some(&mut pid));
-        (pid != 0).then_some(pid)
-    }
-}
-
 /// 遍历所有进程，修剪其工作集。跳过自身、保护名单、排除名单。
 pub fn trim_all_processes(opts: &TrimOptions) -> TrimReport {
     let mut report = TrimReport::default();
@@ -487,57 +444,6 @@ pub fn do_flush_cache() -> CacheResult {
     CacheResult { freed_bytes: freed }
 }
 
-/// 「执行全部已知清理」的结果。
-#[derive(Default)]
-pub struct AllCleanResult {
-    pub standby_cleared: bool,
-    pub standby_freed_bytes: u64,
-    pub syscache_cleared: bool,
-    pub syscache_freed_bytes: u64,
-    pub modified_cleared: bool,
-    pub modified_freed_bytes: u64,
-    pub system_ws_cleared: bool,
-    pub global_freed_bytes: u64,
-}
-
-/// 执行全部已知的内存清理：
-/// 合并物理内存 → 清系统文件缓存 → 全局清空工作集(强力) → Standby → Modified → 系统工作集。
-/// `brute` 决定工作集清空用系统级还是逐进程。
-pub fn do_clean_all(brute: bool) -> AllCleanResult {
-    let mut r = AllCleanResult::default();
-    let global_before = avail_bytes();
-
-    // 1) 合并物理内存页 (Win8+)
-    let _ = enable_privilege("SeIncreaseQuotaPrivilege");
-    let _ = combine_physical_memory();
-
-    // 2) 系统文件缓存
-    (r.syscache_cleared, r.syscache_freed_bytes) = measure_avail_delta(|| {
-        clear_system_file_cache();
-        true
-    });
-
-    // 3) 工作集（强力=系统级，否则逐进程）
-    if brute {
-        r.system_ws_cleared = clear_system_working_sets();
-    } else {
-        let opts = TrimOptions {
-            aggressive: false,
-            exclude: HashSet::new(),
-        };
-        trim_all_processes(&opts);
-    }
-
-    // 4) Standby 备用内存
-    (r.standby_cleared, r.standby_freed_bytes) = measure_avail_delta(clear_standby);
-
-    // 5) Modified 页列表
-    (r.modified_cleared, r.modified_freed_bytes) = measure_avail_delta(flush_modified_page_list);
-
-    r.global_freed_bytes = avail_bytes().saturating_sub(global_before);
-    r
-}
-
 /// 合并物理内存页列表（Win8+，未文档化）。
 fn combine_physical_memory() -> bool {
     #[repr(C)]
@@ -572,8 +478,7 @@ pub struct MemSnapshot {
     pub page_total: u64,
     pub page_used: u64,
     pub page_percent: u32,
-    pub cache_used: u64,
-    pub cache_total: u64,
+    pub cache_bytes: u64,
     pub cache_percent: u32,
 }
 
@@ -591,12 +496,10 @@ pub fn memory_snapshot() -> MemSnapshot {
     if s.page_total > 0 {
         s.page_percent = (s.page_used.saturating_mul(100) / s.page_total).min(100) as u32;
     }
-    // 系统缓存（经 NtQuerySystemInformation(SystemFileCacheInformation)）
-    let (cache_used, cache_total) = system_cache_info();
-    s.cache_used = cache_used;
-    s.cache_total = cache_total;
-    if cache_total > 0 {
-        s.cache_percent = (cache_used.saturating_mul(100) / cache_total).min(100) as u32;
+    // 系统缓存：实时字节，百分比按「占物理内存总量」算
+    s.cache_bytes = system_cache_bytes();
+    if s.phys_total > 0 {
+        s.cache_percent = (s.cache_bytes.saturating_mul(100) / s.phys_total).min(100) as u32;
     }
     s
 }
@@ -662,48 +565,5 @@ pub fn clean_by_level(level: u32) -> String {
         "深度清理完成".to_string()
     } else {
         "标准清理完成".to_string()
-    }
-}
-
-/// 查询系统缓存占用（未文档化 API）。
-/// 返回 (当前缓存大小, 峰值缓存大小) —— 用于显示"已用 / 峰值"而非"已用 / 总量"。
-fn system_cache_info() -> (u64, u64) {
-    #[repr(C)]
-    #[derive(Default)]
-    struct SystemFileCacheInfo {
-        current_size: usize,
-        peak_size: usize,
-        page_fault_count: u32,
-        minimum_working_set: usize,
-        maximum_working_set: usize,
-        current_size_including_transition_in_pages: usize,
-        peak_size_including_transition_in_pages: usize,
-        transition_repurpose_count: u32,
-        flags: u32,
-    }
-    unsafe {
-        let Ok(module) = GetModuleHandleW(w!("ntdll.dll")) else {
-            return (0, 0);
-        };
-        let Some(proc) = GetProcAddress(
-            module,
-            PCSTR(c"NtQuerySystemInformation".as_ptr().cast()),
-        ) else {
-            return (0, 0);
-        };
-        type Fn = unsafe extern "system" fn(i32, *mut core::ffi::c_void, u32, *mut u32) -> i32;
-        let f: Fn = std::mem::transmute(proc);
-        let mut info = SystemFileCacheInfo::default();
-        let status = f(
-            81, // SystemFileCacheInformation
-            &mut info as *mut SystemFileCacheInfo as *mut _,
-            size_of::<SystemFileCacheInfo>() as u32,
-            std::ptr::null_mut(),
-        );
-        if status == 0 {
-            (info.current_size as u64, info.peak_size as u64)
-        } else {
-            (0, 0)
-        }
     }
 }

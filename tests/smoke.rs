@@ -19,20 +19,51 @@ fn smoke_core_modules_load() {
 fn smoke_config_load() {
     let cfg = memclean::core::config::AppConfig::defaults();
     assert_eq!(cfg.interval_minutes, 5);
-    assert_eq!(cfg.level, 1);
+    assert_eq!(cfg.interval_level, 1);
+    assert_eq!(cfg.threshold_percent, 85);
+    assert_eq!(cfg.threshold_level, 2);
     assert!(cfg.fullscreen_avoid);
     assert!(!cfg.autostart);
+}
+
+/// 验证配置路径落在 exe 同级目录（便携程序，不往用户目录写文件）
+#[test]
+fn smoke_config_path_next_to_exe() {
+    let p = memclean::core::config::config_path().expect("current_exe 应可用");
+    let exe_dir = std::env::current_exe().unwrap();
+    let exe_dir = exe_dir.parent().unwrap();
+    assert_eq!(p.parent().unwrap(), exe_dir);
+    assert_eq!(p.file_name().unwrap(), "WinMemCleaner.json");
+    if let Some(appdata) = std::env::var_os("APPDATA") {
+        assert!(!p.starts_with(std::path::PathBuf::from(appdata)));
+    }
+}
+
+/// 验证存盘真的落在 exe 同级（跑完即删，不留垃圾在 target 目录）
+#[test]
+fn smoke_config_save_next_to_exe() {
+    let p = memclean::core::config::config_path().expect("current_exe 应可用");
+    let _ = std::fs::remove_file(&p);
+    memclean::core::config::save(&memclean::core::config::AppConfig::defaults());
+    assert!(p.exists(), "save() 应把配置文件写在 exe 同级: {}", p.display());
+    let back = memclean::core::config::load();
+    assert_eq!(back.threshold_percent, 85);
+    let _ = std::fs::remove_file(&p);
 }
 
 /// 验证配置 sanitize
 #[test]
 fn smoke_config_sanitize() {
     let mut cfg = memclean::core::config::AppConfig::defaults();
-    cfg.interval_minutes = 0; // 超出范围
-    cfg.level = 99;           // 非法值
+    cfg.interval_minutes = 0;   // 超出范围
+    cfg.threshold_percent = 0;   // 超出范围
+    cfg.interval_level = 99;     // 非法值
+    cfg.threshold_level = 0;     // 非法值
     cfg.sanitize();
-    assert_eq!(cfg.interval_minutes, 1); // 被 clamp 到最小值
-    assert_eq!(cfg.level, 1);            // 被重置为默认
+    assert_eq!(cfg.interval_minutes, 1);   // 被 clamp 到最小值
+    assert_eq!(cfg.threshold_percent, 1);  // 被 clamp 到最小值
+    assert_eq!(cfg.interval_level, 1);     // 被重置为默认
+    assert_eq!(cfg.threshold_level, 2);    // 被重置为默认
 }
 
 /// 验证配置边界值
@@ -46,6 +77,15 @@ fn smoke_config边界值() {
     cfg.interval_minutes = 1441; // 超出最大值
     cfg.sanitize();
     assert_eq!(cfg.interval_minutes, 1440);
+
+    // 阈值 100% 永远不会被超过，上限取 99
+    cfg.threshold_percent = 100;
+    cfg.sanitize();
+    assert_eq!(cfg.threshold_percent, 99);
+
+    cfg.threshold_percent = 99;
+    cfg.sanitize();
+    assert_eq!(cfg.threshold_percent, 99);
 }
 
 /// 验证工具函数 wide/wide_to_string 往返一致性
@@ -131,6 +171,12 @@ fn smoke_memory_snapshot() {
     assert!(snap.phys_percent <= 100);
     assert!(snap.page_total > 0);
     assert!(snap.page_percent <= 100);
+    // 系统缓存：实时字节（文档化 API 应有读数，不能静默为 0）
+    assert!(snap.cache_bytes > 0, "GetPerformanceInfo().SystemCache 读数为 0");
+    assert!(snap.cache_bytes <= snap.phys_total);
+    // 百分比的分母必须是物理内存总量，不是缓存峰值
+    let expect = (snap.cache_bytes.saturating_mul(100) / snap.phys_total).min(100) as u32;
+    assert_eq!(snap.cache_percent, expect);
 }
 
 /// 验证管理员检测函数可以调用
@@ -167,7 +213,9 @@ fn smoke_config_json_roundtrip() {
     let json = serde_json::to_string(&cfg).unwrap();
     let back: memclean::core::config::AppConfig = serde_json::from_str(&json).unwrap();
     assert_eq!(cfg.interval_minutes, back.interval_minutes);
-    assert_eq!(cfg.level, back.level);
+    assert_eq!(cfg.interval_level, back.interval_level);
+    assert_eq!(cfg.threshold_percent, back.threshold_percent);
+    assert_eq!(cfg.threshold_level, back.threshold_level);
     assert_eq!(cfg.fullscreen_avoid, back.fullscreen_avoid);
     assert_eq!(cfg.autostart, back.autostart);
 }
@@ -175,10 +223,11 @@ fn smoke_config_json_roundtrip() {
 /// 验证配置 JSON 反序列化容错（未知字段）
 #[test]
 fn smoke_config_json_unknown_fields() {
-    let json = r#"{"interval_minutes": 10, "level": 2, "unknown_key": true}"#;
+    let json = r#"{"interval_minutes": 10, "threshold_percent": 90, "unknown_key": true}"#;
     let cfg: memclean::core::config::AppConfig = serde_json::from_str(json).unwrap();
     assert_eq!(cfg.interval_minutes, 10);
-    assert_eq!(cfg.level, 2);
+    assert_eq!(cfg.threshold_percent, 90);
+    assert_eq!(cfg.threshold_level, 2); // 缺失字段用默认值
 }
 
 /// 验证配置 JSON 反序列化容错（缺失字段用默认值）
@@ -186,6 +235,19 @@ fn smoke_config_json_unknown_fields() {
 fn smoke_config_json_missing_fields() {
     let json = r#"{}"#;
     let cfg: memclean::core::config::AppConfig = serde_json::from_str(json).unwrap();
-    assert_eq!(cfg.interval_minutes, 5); // 默认值
-    assert_eq!(cfg.level, 1);            // 默认值
+    assert_eq!(cfg.interval_minutes, 5);  // 默认值
+    assert_eq!(cfg.interval_level, 1);    // 默认值
+    assert_eq!(cfg.threshold_percent, 85); // 默认值
+    assert_eq!(cfg.threshold_level, 2);   // 默认值
+}
+
+/// 验证 1.0.x 旧配置（单一 level 字段）读入后落到「方式一：定时清理」
+#[test]
+fn smoke_config_json_旧字段兼容() {
+    let json = r#"{"interval_minutes": 10, "level": 2}"#;
+    let cfg: memclean::core::config::AppConfig = serde_json::from_str(json).unwrap();
+    assert_eq!(cfg.interval_minutes, 10);
+    assert_eq!(cfg.interval_level, 2);     // 旧 level 迁移为定时强度
+    assert_eq!(cfg.threshold_percent, 85); // 阈值方式取新默认
+    assert_eq!(cfg.threshold_level, 2);
 }

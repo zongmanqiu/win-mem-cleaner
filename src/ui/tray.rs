@@ -218,7 +218,7 @@ fn tick_update(hwnd: HWND) {
             "物理内存  {} / {}  ({}%)\n虚拟内存  {} / {}  ({}%)\n系统缓存  {} / {}  ({}%)",
             mem::format_bytes(snap.phys_used), mem::format_bytes(snap.phys_total), snap.phys_percent,
             mem::format_bytes(snap.page_used), mem::format_bytes(snap.page_total), snap.page_percent,
-            mem::format_bytes(snap.cache_used), mem::format_bytes(snap.cache_total), snap.cache_percent,
+            mem::format_bytes(snap.cache_bytes), mem::format_bytes(snap.phys_total), snap.cache_percent,
         );
         let tip_wide = crate::core::util::wide(&tip);
 
@@ -333,7 +333,7 @@ fn add_tray_icon(hwnd: HWND) -> bool {
             "物理内存  {} / {}  ({}%)\n虚拟内存  {} / {}  ({}%)\n系统缓存  {} / {}  ({}%)",
             mem::format_bytes(snap.phys_used), mem::format_bytes(snap.phys_total), snap.phys_percent,
             mem::format_bytes(snap.page_used), mem::format_bytes(snap.page_total), snap.page_percent,
-            mem::format_bytes(snap.cache_used), mem::format_bytes(snap.cache_total), snap.cache_percent,
+            mem::format_bytes(snap.cache_bytes), mem::format_bytes(snap.phys_total), snap.cache_percent,
         );
         let tip_wide = crate::core::util::wide(&tip);
         let mut nid = NOTIFYICONDATAW {
@@ -418,11 +418,11 @@ unsafe extern "system" fn wnd_proc(
 
 unsafe fn show_menu(hwnd: HWND) {
     let menu = CreatePopupMenu().unwrap_or_default();
-    let show = crate::core::util::wide("显示窗口");
+    let show = crate::core::util::wide("窗口");
     let std = crate::core::util::wide("标准清理");
-    let deep = crate::core::util::wide("深度清理（短暂卡顿）");
+    let deep = crate::core::util::wide("深度清理");
     let about = crate::core::util::wide("关于");
-    let quit = crate::core::util::wide("完全退出");
+    let quit = crate::core::util::wide("退出");
     let _ = AppendMenuW(menu, MF_STRING, ID_SHOW, windows::core::PCWSTR(show.as_ptr()));
     let _ = AppendMenuW(menu, MF_SEPARATOR, 0, windows::core::PCWSTR::null());
     let _ = AppendMenuW(menu, MF_STRING, ID_CLEAN_STD, windows::core::PCWSTR(std.as_ptr()));

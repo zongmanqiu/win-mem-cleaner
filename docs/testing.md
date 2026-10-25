@@ -8,8 +8,9 @@
 |------|----------|------|----------|
 | 单元测试 | `#[test]` 函数 | 内置 `cargo test` | core 模块纯逻辑 |
 | 集成测试 | `tests/` 目录 | `cargo test` | 模块间交互 |
-| 冒烟测试 | `tests/smoke.rs` | `cargo test` | 基本功能不 panic |
-| 手动测试 | 运行 exe | 人工 | UI 交互、托盘、清理效果 |
+| 冒烟测试 | `tests/smoke.rs` | `cargo test` | 基本功能不 panic + 配置便携性 |
+| 文档门禁 | `tests/docs.rs` | `cargo test` | 文档即被 CI 读：清单/结构/许可/目录纯净/路径泄漏 |
+| 手动测试 | 运行 exe | 人工 | UI 交互、托盘、清理效果（UI 轮次须出像素） |
 
 ## 二、运行测试
 
@@ -37,9 +38,11 @@ cargo test -- --ignored
 | 测试函数 | 验证内容 |
 |----------|----------|
 | `smoke_core_modules_load` | core 模块可以正常导入和调用 |
-| `smoke_config_load` | 配置默认值正确 |
+| `smoke_config_load` | 配置默认值正确（含两种方式各自的阈值与强度） |
+| `smoke_config_path_next_to_exe` | 配置路径在 exe 同级、不落 `%APPDATA%`（便携） |
+| `smoke_config_save_next_to_exe` | `save()` 真的写在 exe 同级，`load()` 能读回 |
 | `smoke_config_sanitize` | 配置校验逻辑正确 |
-| `smoke_config边界值` | 配置边界值处理 |
+| `smoke_config边界值` | 配置边界值处理（间隔 1440、阈值 99） |
 | `smoke_util_roundtrip` | UTF-8 ↔ UTF-16 往返一致性 |
 | `smoke_util_empty` | 空字符串处理 |
 | `smoke_util_ascii` | 纯 ASCII 处理 |
@@ -54,6 +57,21 @@ cargo test -- --ignored
 | `smoke_config_json_roundtrip` | 配置 JSON 序列化往返 |
 | `smoke_config_json_unknown_fields` | JSON 未知字段容错 |
 | `smoke_config_json_missing_fields` | JSON 缺失字段用默认值 |
+| `smoke_config_json_旧字段兼容` | 1.0.x 的单一 `level` 字段迁移到定时强度 |
+
+### `tests/docs.rs` — 文档一致性门禁
+
+让 `cargo test` 替我们记住「代码挪了、说明还留在原处」这类腐化。只查事实、不查文笔：
+
+| 测试函数 | 钉住的事实 |
+|----------|-----------|
+| `controlled_docs_exist_and_are_substantive` | 受控文档都存在、非空、有实质内容（>10 行） |
+| `every_doc_is_registered_in_manifest` | `docs/` 每个 `.md` 都登记在 DOCS_MANIFEST |
+| `structure_doc_covers_every_source_module` | 结构说明点名了每个 `src/` 顶层模块 + 入口文件 |
+| `structure_doc_named_files_exist` | 结构说明点名的每个 `.rs` 真实存在（删文件要删条目） |
+| `repo_root_has_no_stray_files` | `main/` 根无白名单外文件（拦调试残留 / 草稿） |
+| `license_is_verbatim_agpl3` | LICENSE 是逐字 AGPL-3.0、UTF-8、无 BOM、无本项目署名 |
+| `no_local_absolute_paths_leak` | 任何文本文件不泄漏本机绝对路径 |
 
 ### Windows 特定测试
 
@@ -65,40 +83,47 @@ cargo test -- --ignored
 
 ### 主窗口
 - [ ] 启动后窗口显示在屏幕右下角
-- [ ] 标题栏显示「WinMemCleaner-管理员」或「WinMemCleaner-非管理员」
+- [ ] 标题栏固定显示「WinMemCleaner」（不带权限后缀）
 - [ ] 三个进度条正确显示物理/虚拟/缓存内存
 - [ ] 进度条颜色随占用变化（绿→黄→红）
 - [ ] 进度条内百分比数字正确
 - [ ] 窗口宽度自动适应文字长度
 
 ### 控件
-- [ ] 间隔输入框可编辑，仅允许数字
-- [ ] 清理强度下拉框可选择「标准」/「深度(短暂卡顿)」
+- [ ] 「自动清理」分组内两行，列位置对齐：条件 / 数值 / 单位 / 强度 / 清理
+- [ ] 方式一「每 [x] 分钟 [y] 清理」：x 仅允许整数，y 下拉为「标准」/「深度」
+- [ ] 方式二「内存 > [x] % [y] 清理」：x 仅允许整数，y 下拉为「标准」/「深度」
+- [ ] 默认显示：每 5 分钟 标准 / 内存 > 85% 深度
+- [ ] 输入框失焦、下拉改选后自动保存到 exe 同级 `WinMemCleaner.json`
+- [ ] 便携：换目录/换机器运行，用户目录 `%APPDATA%\memclean\` 不再生成或更新文件
 - [ ] 全屏避让复选框可勾选/取消
 - [ ] 开机启动复选框可勾选/取消
-- [ ] 修改设置后自动保存到 config.json
 
 ### 托盘
 - [ ] 托盘图标显示内存占用百分比
 - [ ] 托盘图标颜色随占用变化
 - [ ] 鼠标悬停显示 tooltip（物理/虚拟/缓存三项）
-- [ ] 右键菜单显示：显示窗口 / 标准清理 / 深度清理 / 关于 / 完全退出
+- [ ] 右键菜单从上到下依次为：窗口 / 标准清理 / 深度清理 / 关于 / 退出
 - [ ] 双击托盘图标显示主窗口
-- [ ] 点击「显示窗口」显示主窗口
+- [ ] 点击「窗口」显示主窗口
 - [ ] 点击「标准清理」执行清理
 - [ ] 点击「深度清理」执行清理
-- [ ] 点击「完全退出」退出程序
+- [ ] 点击「退出」退出程序
 
 ### 关于对话框
-- [ ] 显示版本号「WinMemCleaner 1.0.0」
+- [ ] 显示版本号「WinMemCleaner 1.1.0」
 - [ ] 显示作者和邮箱
-- [ ] Gitee 仓库链接可点击（蓝色下划线）
+- [ ] 一行并排显示「Gitee仓库 | GitHub仓库」，中间用竖线间隔
+- [ ] 两条链接各自可点击，分别打开 Gitee / GitHub 仓库
 - [ ] 链接悬停变红色
 - [ ] 微信/支付宝二维码正确显示
 - [ ] 对话框居中显示
 
 ### 自动清理
-- [ ] 设置间隔后，等待对应时间自动触发清理
+- [ ] 方式一：设置间隔后，等待对应时间自动触发清理
+- [ ] 方式二：内存占用超过阈值时自动触发清理
+- [ ] 方式二触发后 60 秒静默期内不重复触发（占用持续超阈值也不会反复清理）
+- [ ] 两种方式独立计时，可同时生效
 - [ ] 全屏应用运行时跳过自动清理
 - [ ] 全屏应用关闭后补清
 
