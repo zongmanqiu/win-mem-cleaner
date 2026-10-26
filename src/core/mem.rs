@@ -7,7 +7,10 @@ use std::collections::HashSet;
 use std::mem::size_of;
 
 use windows::core::{w, PCSTR, PCWSTR};
-use windows::Win32::Foundation::{CloseHandle, HANDLE, LUID};
+use windows::Win32::Foundation::{CloseHandle, HANDLE, LUID, RECT};
+use windows::Win32::Graphics::Gdi::{
+    GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST,
+};
 use windows::Win32::Security::{
     AdjustTokenPrivileges, LookupPrivilegeValueW, LUID_AND_ATTRIBUTES, SE_PRIVILEGE_ENABLED,
     TOKEN_ADJUST_PRIVILEGES, TOKEN_PRIVILEGES, TOKEN_QUERY,
@@ -27,8 +30,10 @@ use windows::Win32::System::Threading::{
     PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_QUOTA,
 };
 use windows::Win32::UI::Shell::{
-    SHQueryUserNotificationState, QUNS_BUSY, QUNS_PRESENTATION_MODE,
-    QUNS_RUNNING_D3D_FULL_SCREEN,
+    SHQueryUserNotificationState, QUNS_PRESENTATION_MODE, QUNS_RUNNING_D3D_FULL_SCREEN,
+};
+use windows::Win32::UI::WindowsAndMessaging::{
+    GetClassNameW, GetForegroundWindow, GetWindowRect, IsIconic,
 };
 
 // ---------------------------------------------------------------------------
@@ -533,16 +538,64 @@ pub fn is_admin() -> bool {
     }
 }
 
-/// 判断当前是否在「全屏 / 游戏 / 演示 / 忙碌」状态下——自动清理应避开，避免造成卡顿。
+/// 判断当前是否在「全屏 / 游戏 / 演示」状态下——自动清理应避开，避免造成卡顿。
+///
+/// 不能用 `SHQueryUserNotificationState` 的 `QUNS_BUSY`：它只表示「系统里**存在**全屏窗口」，
+/// 后台常驻的全屏覆盖层（截图/录屏/悬浮窗）会让它长期为真。实测本机 QUNS 常驻 BUSY，
+/// 自动清理因此永远走避让分支、一次都不触发。改为看**前台**窗口是否真的铺满显示器。
 pub fn is_game_or_fullscreen() -> bool {
     unsafe {
         if let Ok(state) = SHQueryUserNotificationState() {
-            state.0 == QUNS_RUNNING_D3D_FULL_SCREEN.0
+            // 独占全屏 D3D 与演示模式仍是可靠信号
+            if state.0 == QUNS_RUNNING_D3D_FULL_SCREEN.0
                 || state.0 == QUNS_PRESENTATION_MODE.0
-                || state.0 == QUNS_BUSY.0
-        } else {
-            false
+            {
+                return true;
+            }
         }
+    }
+    foreground_covers_monitor()
+}
+
+/// 前台窗口是否铺满它所在的显示器（无边框全屏 / 窗口化全屏游戏）。
+/// 桌面与任务栏本身也铺满屏幕，但它们不是「全屏应用」，需排除。
+fn foreground_covers_monitor() -> bool {
+    unsafe {
+        let fg = GetForegroundWindow();
+        if fg.0.is_null() || IsIconic(fg).as_bool() {
+            return false;
+        }
+        let mut class = [0u16; 64];
+        let n = GetClassNameW(fg, &mut class);
+        if n > 0 {
+            let name = crate::core::util::wide_to_string(&class[..n as usize]);
+            if matches!(
+                name.as_str(),
+                "Progman" | "WorkerW" | "Shell_TrayWnd" | "Shell_SecondaryTrayWnd"
+            ) {
+                return false;
+            }
+        }
+        let mut wr = RECT::default();
+        if GetWindowRect(fg, &mut wr).is_err() {
+            return false;
+        }
+        let mon = MonitorFromWindow(fg, MONITOR_DEFAULTTONEAREST);
+        if mon.is_invalid() {
+            return false;
+        }
+        let mut mi = MONITORINFO {
+            cbSize: size_of::<MONITORINFO>() as u32,
+            ..Default::default()
+        };
+        if !GetMonitorInfoW(mon, &mut mi).as_bool() {
+            return false;
+        }
+        // 容 1px 误差：部分全屏游戏 / 播放器的窗口比显示器小 1px
+        wr.left <= mi.rcMonitor.left + 1
+            && wr.top <= mi.rcMonitor.top + 1
+            && wr.right >= mi.rcMonitor.right - 1
+            && wr.bottom >= mi.rcMonitor.bottom - 1
     }
 }
 

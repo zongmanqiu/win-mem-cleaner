@@ -1,7 +1,7 @@
 # WinMemCleaner — 轻量 Windows 内存清理工具
 
-**[⬇️ 下载 (1.1.0) (Gitee)](https://gitee.com/qiuzongman/win-mem-cleaner/releases/download/1.1.0/WinMemCleaner_x64_1.1.0.zip)**
- ｜ **[⬇️ 下载 (1.1.0) (GitHub)](https://github.com/zongmanqiu/win-mem-cleaner/releases/download/1.1.0/WinMemCleaner_x64_1.1.0.zip)**
+**[⬇️ 下载 (1.1.1) (Gitee)](https://gitee.com/qiuzongman/win-mem-cleaner/releases/download/1.1.1/WinMemCleaner_x64_1.1.1.zip)**
+ ｜ **[⬇️ 下载 (1.1.1) (GitHub)](https://github.com/zongmanqiu/win-mem-cleaner/releases/download/1.1.1/WinMemCleaner_x64_1.1.1.zip)**
  ｜ [Gitee主仓](https://gitee.com/qiuzongman/win-mem-cleaner)
  ｜ [GitHub镜像](https://github.com/zongmanqiu/win-mem-cleaner)
 
@@ -69,7 +69,7 @@ $env:CARGO_TARGET_DIR = "..\.temp\target"
 cargo build --release
 ```
 
-产物：`../.build/WinMemCleaner_x64.exe`（约 0.4MB）
+产物：`../.build/WinMemCleaner.exe`（约 0.4MB）
 
 ### 测试
 

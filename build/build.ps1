@@ -1,4 +1,4 @@
-# build.ps1 - WinMemCleaner 构建脚本
+﻿# build.ps1 - WinMemCleaner 构建脚本
 #
 # 用法：
 #   .\build.ps1            # Release 构建
@@ -45,10 +45,10 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "cargo build failed" }
 
     # 复制 exe 到 .build/
-    $ExeSrc = Join-Path $env:CARGO_TARGET_DIR "$Profile\WinMemCleaner_x64.exe"
+    $ExeSrc = Join-Path $env:CARGO_TARGET_DIR "$Profile\WinMemCleaner.exe"
     $BuildDir = Join-Path $BuildRoot ".build"
     if (!(Test-Path $BuildDir)) { New-Item -ItemType Directory -Path $BuildDir -Force | Out-Null }
-    $ExeDst = Join-Path $BuildDir "WinMemCleaner_x64.exe"
+    $ExeDst = Join-Path $BuildDir "WinMemCleaner.exe"
     if (Test-Path $ExeSrc) {
         Copy-Item $ExeSrc $ExeDst -Force
         $Size = (Get-Item $ExeDst).Length

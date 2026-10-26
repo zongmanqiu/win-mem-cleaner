@@ -1,5 +1,23 @@
 # 更新日志
 
+## [1.1.1] - 2026-10-26
+
+### 修复
+- **阈值自动清理从不触发**：`is_game_or_fullscreen()` 原先把 `SHQueryUserNotificationState()` 的
+  `QUNS_BUSY` 当作「正在全屏」，但它只表示系统里**存在**全屏窗口（不要求前台）。后台常驻的
+  全屏覆盖层（截图/录屏/悬浮窗）会让 `QUNS_BUSY` 长期为真，调度器每轮都走避让分支，内存再高也不清。
+  现改为只看**前台**窗口是否铺满其所在显示器（容 1px 误差，排除桌面/任务栏），并保留
+  独占全屏 D3D（`QUNS_RUNNING_D3D_FULL_SCREEN`）与演示模式（`QUNS_PRESENTATION_MODE`）信号
+- 版本号 1.1.0 → 1.1.1（`Cargo.toml` 单一来源，同步 `app.manifest` 的 assemblyIdentity）
+- 发布产物更名 `WinMemCleaner_x64.exe` → `WinMemCleaner.exe`（x64 与版本号只体现在发布 zip 名上）
+- **`build/build.ps1` 拷不进 `.build`**：脚本是无 BOM 的 UTF-8，PowerShell 5.1 按 GBK 解码时注释行末的
+  全角 `）` 吞掉换行，`$env:CARGO_TARGET_DIR` 赋值被并进注释从未执行，最后 `Join-Path` 拿到 null。
+  改存为带 BOM 的 UTF-8（PS 5.1 只认 BOM）
+
+### 文档同步
+- `docs/platform_notes.md` 新增第 9 条：`QUNS_BUSY` 的真实语义与实测判据
+- `AGENTS.md` §六、`docs/api.md`、`docs/architecture.md`、`docs/testing.md` 同步全屏避让判据
+
 ## [1.1.0] - 2026-10-25
 
 ### 新增

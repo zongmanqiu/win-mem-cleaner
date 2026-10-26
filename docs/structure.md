@@ -119,6 +119,6 @@ core ← ui
 |------|------|------|
 | `../.temp/target/` | 编译中间产物（由 `.cargo/config.toml` 钉死） | ❌ |
 | `../.temp/` | 一次性验证脚本 / 实测转储 | ❌ |
-| `../.build/` | 发布产物 `WinMemCleaner_x64.exe` | ❌ |
+| `../.build/` | 发布产物 `WinMemCleaner.exe` | ❌ |
 
-**对外发布时**：仅分发 `.build/WinMemCleaner_x64.exe`（+ 同级 `WinMemCleaner.json` 由程序自生成）。
+**对外发布时**：仅分发 `.build/WinMemCleaner.exe`（+ 同级 `WinMemCleaner.json` 由程序自生成）。

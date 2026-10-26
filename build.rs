@@ -43,7 +43,7 @@ fn main() {
     res.set("ProductVersion", &pkg_version);
     res.set("FileVersion", &pkg_version);
     res.set("CompanyName", "邱宗满");
-    res.set("OriginalFilename", "WinMemCleaner_x64.exe");
+    res.set("OriginalFilename", "WinMemCleaner.exe");
     res.set("InternalName", "WinMemCleaner");
     
     res.compile().expect("winres compile failed");

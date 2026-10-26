@@ -71,4 +71,20 @@
 - **现象**：脚本里中文字符串导致整份 `ParserError: 字符串缺少终止符`。
 - **根因**：无 BOM 的 UTF-8 `.ps1` 在 zh-CN 机器上按 GBK 读，某个多字节序列吞掉引号。
 - **判据**：验证脚本**纯 ASCII**；要输出中文，写到文件再用 UTF-8 读回。
-- **出处**：v1.1.0 像素验证脚本。
+- **另一副面孔（v1.1.1 实测）**：不报错也能坏——`build/build.ps1` 注释行末的全角 `）`（UTF-8 `EF BC 89`）
+  被 GBK 解码吞掉换行，下一行 `$env:CARGO_TARGET_DIR = ...` 被并进注释、从未执行；脚本直到
+  「拷 exe 到 .build」才报 `Join-Path ... Path ... null`。修法：给 `.ps1` 存成**带 BOM 的 UTF-8**
+  （PowerShell 5.1 只认 BOM），或全脚本纯 ASCII。
+- **判据**：`[System.IO.File]::ReadAllBytes()` 前 3 字节为 `EF BB BF`；同一脚本加 BOM 后构建成功。
+- **出处**：v1.1.0 像素验证脚本；v1.1.1 修 `build/build.ps1`。
+
+## 9. `QUNS_BUSY` 是「系统里存在全屏窗口」，不是「前台在全屏」
+
+- **现象**：物理内存到 95% 也不触发阈值清理；`is_game_or_fullscreen()` 恒为 true。
+- **根因**：`SHQueryUserNotificationState()` 在普通桌面返回 `QUNS_BUSY(2)`——机器上有一个后台常驻的
+  全屏覆盖层（实测 `CurSeen Overlay`，`WindUiWindowClass`，可见、未 cloaked、`0,0,1920,1080`）。
+  `QUNS_BUSY` 的语义是「有全屏应用在跑」，**不要求在前台**；调度器每轮都走避让分支，一次都不清。
+- **判据**：前台是普通最大化窗口（`Chrome_WidgetWin_1`，`-8,-8,1928,1040`，任务栏可见）时 QUNS 仍为 2；
+  枚举铺满监视器的窗口只有该覆盖层 + `TextInputHost`（DWM cloaked=2）+ `Progman`（桌面）。
+  改用「前台窗口是否铺满其所在显示器」后，同一时刻返回 false；用全屏窗口占住前台则返回 true。
+- **出处**：v1.1.1 修复，见 `docs/changes.md`。
