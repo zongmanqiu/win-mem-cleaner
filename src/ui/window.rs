@@ -50,12 +50,13 @@ const IDC_INFO_PAGE: i32 = 3012;
 const IDC_INFO_CACHE: i32 = 3013;
 
 const IDC_INTERVAL_EDIT: i32 = 2101;
-const IDC_INTERVAL_LEVEL: i32 = 2102;
 const IDC_THRESHOLD_EDIT: i32 = 2103;
-const IDC_THRESHOLD_LEVEL: i32 = 2104;
 
 const IDC_AUTOSTART: i32 = 2007;
-const IDC_FSAVOID: i32 = 2008;
+
+/// 两行方式各自的「上次自动清理」时刻显示位（从未执行显示 `--:--`）。
+const IDC_LAST_INTERVAL: i32 = 9008;
+const IDC_LAST_THRESHOLD: i32 = 9009;
 
 /// EDIT 控件失去焦点通知（winuser.h: EN_KILLFOCUS = 0x0200）。
 const EN_KILLFOCUS: i32 = 0x0200;
@@ -211,7 +212,7 @@ fn make_child(
     h: i32,
 ) -> HWND {
     unsafe {
-        CreateWindowExW(
+        let child = CreateWindowExW(
             WINDOW_EX_STYLE(0),
             class,
             text,
@@ -225,7 +226,21 @@ fn make_child(
             None,
             None,
         )
-        .unwrap_or_default()
+        .unwrap_or_default();
+        set_child_font(child);
+        child
+    }
+}
+
+/// 控件**自己**在创建时就要拿到界面字体。
+/// 不能只靠 `apply_ui_font` 事后 `EnumChildWindows` 补一遍——那样字体一设就得在布局之前，
+/// 而布局又要量字体宽度，鸡生蛋；实测把顺序换过来之后所有控件退回系统默认字体（更宽），
+/// 末位字符被裁成 "15.8 G"。
+fn set_child_font(child: HWND) {
+    if let Some(&fh) = KEEP_FONT.get() {
+        unsafe {
+            let _ = SendMessageW(child, WM_SETFONT, WPARAM(fh), LPARAM(1));
+        }
     }
 }
 fn lbl(hwnd: HWND, id: i32, x: i32, y: i32, w: i32, h: i32) -> HWND {
@@ -241,7 +256,7 @@ fn groupbox(hwnd: HWND, id: i32, x: i32, y: i32, w: i32, h: i32, text: &str) -> 
 }
 fn edt(hwnd: HWND, id: i32, x: i32, y: i32, w: i32, h: i32) -> HWND {
     unsafe {
-        CreateWindowExW(
+        let child = CreateWindowExW(
             WS_EX_CLIENTEDGE,
             w!("EDIT"),
             PCWSTR::null(),
@@ -255,13 +270,11 @@ fn edt(hwnd: HWND, id: i32, x: i32, y: i32, w: i32, h: i32) -> HWND {
             None,
             None,
         )
-        .unwrap_or_default()
+        .unwrap_or_default();
+        set_child_font(child);
+        child
     }
 }
-fn combo(hwnd: HWND, id: i32, x: i32, y: i32, w: i32) -> HWND {
-    make_child(hwnd, w!("COMBOBOX"), PCWSTR::null(), ws(0x3), id, x, y, w, 120)
-}
-
 fn set_text(hwnd: HWND, id: i32, text: &str) {
     unsafe {
         let h = dlg(hwnd, id);
@@ -364,6 +377,19 @@ fn refresh_info(hwnd: HWND) {
             crate::core::mem::format_bytes(s.phys_total),
         ),
     );
+
+    // 两行各自的「上次自动清理」时刻；本次运行以来没跑过就是 --:--
+    use crate::core::scheduler::Slot;
+    for (id, slot) in [
+        (IDC_LAST_INTERVAL, Slot::Interval),
+        (IDC_LAST_THRESHOLD, Slot::Threshold),
+    ] {
+        let t = match crate::core::scheduler::last_run(slot) {
+            Some((h, m, _)) => format!("{h:02}:{m:02}"),
+            None => "--:--".to_string(),
+        };
+        set_text(hwnd, id, &t);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -396,16 +422,46 @@ fn restore_self_priority(prev: PROCESS_CREATION_FLAGS) {
 // ---------------------------------------------------------------------------
 // 开机启动
 // ---------------------------------------------------------------------------
-fn set_autostart(enable: bool) {
+/// 计划任务名。本程序清单是 `requireAdministrator`，走 `HKCU\Run` 会在**登录时弹 UAC**，
+/// 没人点就不启动——这是「常驻」最不可靠的一条路。计划任务 + `/rl HIGHEST` 才是正解。
+const TASK_NAME: &str = "WinMemCleaner";
+const RUN_VALUE: &str = "memclean";
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+fn schtasks(args: &[&str]) -> bool {
+    use std::os::windows::process::CommandExt;
+    std::process::Command::new("schtasks.exe")
+        .args(args)
+        .creation_flags(CREATE_NO_WINDOW) // 别在用户桌面上闪一个控制台
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// 注册/刷新计划任务（登录触发、最高权限）。失败返回 false，由调用方退回 Run 键。
+fn schedule_task(exe: &std::path::Path) -> bool {
+    let action = format!("\"{}\" silent", exe.display());
+    schtasks(&[
+        "/create", "/f", "/tn", TASK_NAME,
+        "/sc", "ONLOGON", "/rl", "HIGHEST", "/tr", &action,
+    ])
+}
+
+fn delete_task() {
+    schtasks(&["/delete", "/f", "/tn", TASK_NAME]);
+}
+
+/// 写/删 `HKCU\...\Run` 里的启动项。`None` = 删除。
+fn write_run_key(cmd: Option<&str>) {
     use windows::Win32::System::Registry::{
         HKEY, HKEY_CURRENT_USER, KEY_READ, KEY_WRITE, REG_OPEN_CREATE_OPTIONS, REG_SZ,
         RegCloseKey, RegCreateKeyExW, RegDeleteValueW, RegSetValueExW,
     };
     let key = crate::core::util::wide(r"Software\Microsoft\Windows\CurrentVersion\Run");
-    let value = crate::core::util::wide("memclean");
+    let value = crate::core::util::wide(RUN_VALUE);
     unsafe {
         let mut hkey = HKEY::default();
-        let res = RegCreateKeyExW(
+        if RegCreateKeyExW(
             HKEY_CURRENT_USER,
             PCWSTR(key.as_ptr()),
             0,
@@ -415,21 +471,43 @@ fn set_autostart(enable: bool) {
             None,
             &mut hkey,
             None,
-        );
-        if res.is_ok() {
-            if enable {
-                if let Ok(exe) = std::env::current_exe() {
-                    let mut data = crate::core::util::wide(&format!("\"{}\" silent", exe.display()));
-                    data.push(0);
-                    let bytes: &[u8] =
-                        std::slice::from_raw_parts(data.as_ptr() as *const u8, data.len() * 2);
-                    let _ = RegSetValueExW(hkey, PCWSTR(value.as_ptr()), 0, REG_SZ, Some(bytes));
-                }
-            } else {
+        )
+        .is_err()
+        {
+            return;
+        }
+        match cmd {
+            Some(cmd) => {
+                let mut data = crate::core::util::wide(cmd);
+                data.push(0);
+                let bytes: &[u8] =
+                    std::slice::from_raw_parts(data.as_ptr() as *const u8, data.len() * 2);
+                let _ = RegSetValueExW(hkey, PCWSTR(value.as_ptr()), 0, REG_SZ, Some(bytes));
+            }
+            None => {
                 let _ = RegDeleteValueW(hkey, PCWSTR(value.as_ptr()));
             }
-            let _ = RegCloseKey(hkey);
         }
+        let _ = RegCloseKey(hkey);
+    }
+}
+
+/// 设置开机启动。计划任务优先；建不了才退回 Run 键。
+/// 两条路只留一条——同时存在会在开机时拉起两个实例去抢单实例互斥。
+fn set_autostart(enable: bool) {
+    let exe = match std::env::current_exe() {
+        Ok(p) => p,
+        Err(_) => return,
+    };
+    if enable {
+        if schedule_task(&exe) {
+            write_run_key(None); // 迁移掉老版本的 Run 项
+        } else {
+            write_run_key(Some(&format!("\"{}\" silent", exe.display())));
+        }
+    } else {
+        delete_task();
+        write_run_key(None);
     }
 }
 
@@ -438,11 +516,8 @@ fn set_autostart(enable: bool) {
 // ---------------------------------------------------------------------------
 fn sync_ui(hwnd: HWND, c: &AppConfig) {
     set_edit(hwnd, IDC_INTERVAL_EDIT, c.interval_minutes);
-    combo_set_level(hwnd, IDC_INTERVAL_LEVEL, c.interval_level);
     set_edit(hwnd, IDC_THRESHOLD_EDIT, c.threshold_percent);
-    combo_set_level(hwnd, IDC_THRESHOLD_LEVEL, c.threshold_level);
     set_checked(hwnd, IDC_AUTOSTART, c.autostart);
-    set_checked(hwnd, IDC_FSAVOID, c.fullscreen_avoid);
 }
 
 fn save_from_ui(hwnd: HWND) {
@@ -453,56 +528,11 @@ fn save_from_ui(hwnd: HWND) {
     if let Some(v) = edit_val(hwnd, IDC_THRESHOLD_EDIT) {
         c.threshold_percent = v;
     }
-    c.interval_level = combo_level(hwnd, IDC_INTERVAL_LEVEL);
-    c.threshold_level = combo_level(hwnd, IDC_THRESHOLD_LEVEL);
     c.autostart = checked(hwnd, IDC_AUTOSTART);
-    c.fullscreen_avoid = checked(hwnd, IDC_FSAVOID);
     c.sanitize();
     *shared().cfg.write().unwrap_or_else(|e| e.into_inner()) = c.clone();
     crate::core::config::save(&c);
     sync_ui(hwnd, &c);
-}
-
-// ---- 清理强度下拉框 ----
-fn combo_add_string(hwnd: HWND, id: i32, item: &str) {
-    unsafe {
-        let h = dlg(hwnd, id);
-        let text = crate::core::util::wide(item);
-        let _ = SendMessageW(
-            h,
-            windows::Win32::UI::WindowsAndMessaging::CB_ADDSTRING,
-            WPARAM(0),
-            LPARAM(text.as_ptr() as isize),
-        );
-    }
-}
-fn combo_sel(hwnd: HWND, id: i32) -> u32 {
-    unsafe {
-        let h = dlg(hwnd, id);
-        SendMessageW(h, 0x0147, WPARAM(0), LPARAM(0)).0 as u32
-    }
-}
-fn combo_set_sel(hwnd: HWND, id: i32, idx: usize) {
-    unsafe {
-        let h = dlg(hwnd, id);
-        let _ = SendMessageW(h, 0x014E, WPARAM(idx), LPARAM(0));
-    }
-}
-fn combo_fill_level(hwnd: HWND, id: i32) {
-    combo_add_string(hwnd, id, "标准");
-    combo_add_string(hwnd, id, "深度");
-}
-fn combo_set_level(hwnd: HWND, id: i32, level: u32) {
-    let idx = (level.saturating_sub(1)).min(1) as usize;
-    combo_set_sel(hwnd, id, idx);
-}
-fn combo_level(hwnd: HWND, id: i32) -> u32 {
-    let sel = combo_sel(hwnd, id);
-    if sel == u32::MAX {
-        1
-    } else {
-        (sel + 1).min(2)
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -517,6 +547,9 @@ unsafe extern "system" fn wnd_proc(
     match msg {
         WM_CREATE => {
             shared().set_hwnd(hwnd);
+            // 字体必须先于布局：`create_ui` 要用 `measure_text_width` 量出窗口宽度，
+            // 而它读的是 `KEEP_FONT`。顺序颠倒 ⇒ 用默认字体量 ⇒ 整个窗口宽度算错。
+            apply_ui_font(hwnd);
             create_ui(hwnd);
             refresh_info(hwnd);
             let _ = SetTimer(hwnd, TIMER_ID, TIMER_MS, None);
@@ -536,7 +569,6 @@ unsafe extern "system" fn wnd_proc(
             let id = (wparam.0 & 0xffff) as i32;
             let notify = (wparam.0 >> 16) as i32;
             match id {
-                IDC_INTERVAL_LEVEL | IDC_THRESHOLD_LEVEL => save_from_ui(hwnd),
                 IDC_INTERVAL_EDIT | IDC_THRESHOLD_EDIT => {
                     if notify == EN_KILLFOCUS {
                         save_from_ui(hwnd);
@@ -547,12 +579,13 @@ unsafe extern "system" fn wnd_proc(
                     set_autostart(on);
                     save_from_ui(hwnd);
                 }
-                IDC_FSAVOID => save_from_ui(hwnd),
                 _ => {}
             }
             LRESULT(0)
         }
         WM_CLOSE => {
+            // 关窗只是隐藏到托盘——先存盘，否则「敲完数字直接点 X」会把设置丢掉
+            save_from_ui(hwnd);
             let _ = ShowWindow(hwnd, SW_HIDE);
             LRESULT(0)
         }
@@ -567,6 +600,7 @@ unsafe extern "system" fn wnd_proc(
             LRESULT(0)
         }
         super::tray::MSG_TRAY_QUIT => {
+            save_from_ui(hwnd); // 退出前同样存一次，别让最后一次改动蒸发
             shared().quit.store(true, Ordering::Relaxed);
             windows::Win32::UI::WindowsAndMessaging::PostQuitMessage(0);
             LRESULT(0)
@@ -593,8 +627,11 @@ fn measure_text_width(hwnd: HWND, text: &str) -> i32 {
             let _ = SelectObject(hdc, HFONT(fh as *mut _));
         }
         let wide = crate::core::util::wide(text);
+        // `util::wide` 末尾带 NUL，而 windows-rs 把切片长度当作 Win32 的字符数 `c` 传下去——
+        // 不去掉这枚 NUL 就会多量一个字模的推进宽度
+        let chars = &wide[..wide.len().saturating_sub(1)];
         let mut size = SIZE::default();
-        let _ = GetTextExtentPoint32W(hdc, &wide, &mut size);
+        let _ = GetTextExtentPoint32W(hdc, chars, &mut size);
         let _ = ReleaseDC(hwnd, hdc);
         size.cx
     }
@@ -616,15 +653,16 @@ fn create_ui(hwnd: HWND) {
         format!("系统缓存 {} / {}", crate::core::mem::format_bytes(s.cache_bytes), crate::core::mem::format_bytes(s.phys_total)),
     ];
     let max_text_w = texts.iter().map(|t| measure_text_width(hwnd, t)).max().unwrap_or(160);
-    let content_w = MARGIN + bar_w + bar_gap + max_text_w + MARGIN;
-    let win_w = content_w.max(280);
+    // 下面所有坐标都是**客户区**坐标，最后一步才换算成外框尺寸交给 SetWindowPos。
+    // 混用两者是本窗口一直存在的布局错误：分组框右线被画到窗口边框上（右边距实测 0）。
+    let client_w = (MARGIN + bar_w + bar_gap + max_text_w + MARGIN).max(300);
 
     let y1 = MARGIN;
     let y2 = y1 + row;
     let y3 = y2 + row;
     let x = MARGIN;
     let text_x = x + bar_w + bar_gap;
-    let text_w = win_w - MARGIN - text_x;
+    let text_w = client_w - MARGIN - text_x;
 
     make_bar(hwnd, IDC_BAR_PHYS, x, y1, bar_w, 16);
     lbl(hwnd, IDC_INFO_PHYS, text_x, y1, text_w, 16);
@@ -634,7 +672,7 @@ fn create_ui(hwnd: HWND) {
     lbl(hwnd, IDC_INFO_CACHE, text_x, y3, text_w, 16);
 
     let box_x = x;
-    let box_w = win_w - MARGIN * 2;
+    let box_w = client_w - MARGIN * 2;
     let box_y = y3 + row;
     let box_h = 66;
     groupbox(hwnd, 9001, box_x, box_y, box_w, box_h, "自动清理");
@@ -643,42 +681,64 @@ fn create_ui(hwnd: HWND) {
     let col_cond = box_x + 12;
     let col_edit = box_x + 64;
     let col_unit = box_x + 100;
-    let col_combo = box_x + 130;
-    let col_act = box_x + 192;
+    let col_act = box_x + 130;
+    // 上次自动清理时刻：贴着分组框右缘右对齐，窗口变宽也不会错位
+    let col_time = box_x + box_w - 12 - 40;
 
-    // 方式一：每 x 分钟，y 清理
+    // 方式一：每 x 分钟 标准清理（档位固定，直接写在文字里）
     let row1 = box_y + 20;
     lbl(hwnd, 9002, col_cond, row1, 48, 18);
     set_text(hwnd, 9002, "每");
     edt(hwnd, IDC_INTERVAL_EDIT, col_edit, row1 - 1, 32, 18);
     lbl(hwnd, 9003, col_unit, row1, 26, 18);
     set_text(hwnd, 9003, "分钟");
-    combo(hwnd, IDC_INTERVAL_LEVEL, col_combo, row1 - 3, 58);
-    combo_fill_level(hwnd, IDC_INTERVAL_LEVEL);
-    lbl(hwnd, 9005, col_act, row1, 30, 18);
-    set_text(hwnd, 9005, "清理");
+    lbl(hwnd, 9005, col_act, row1, 60, 18);
+    set_text(hwnd, 9005, "标准清理");
+    lbl(hwnd, IDC_LAST_INTERVAL, col_time, row1, 40, 18);
 
-    // 方式二：内存 > x %，y 清理
+    // 方式二：内存 > x % 深度清理
     let row2 = row1 + 22;
     lbl(hwnd, 9004, col_cond, row2, 48, 18);
     set_text(hwnd, 9004, "内存 >");
     edt(hwnd, IDC_THRESHOLD_EDIT, col_edit, row2 - 1, 32, 18);
     lbl(hwnd, 9006, col_unit, row2, 26, 18);
     set_text(hwnd, 9006, "%");
-    combo(hwnd, IDC_THRESHOLD_LEVEL, col_combo, row2 - 3, 58);
-    combo_fill_level(hwnd, IDC_THRESHOLD_LEVEL);
-    lbl(hwnd, 9007, col_act, row2, 30, 18);
-    set_text(hwnd, 9007, "清理");
+    lbl(hwnd, 9007, col_act, row2, 60, 18);
+    set_text(hwnd, 9007, "深度清理");
+    lbl(hwnd, IDC_LAST_THRESHOLD, col_time, row2, 40, 18);
 
     let chk_y = box_y + box_h + 6;
-    chk(hwnd, IDC_FSAVOID, box_x, chk_y, 90, 18, "全屏避让");
-    chk(hwnd, IDC_AUTOSTART, box_x + 96, chk_y, 90, 18, "开机启动");
+    chk(hwnd, IDC_AUTOSTART, box_x, chk_y, 90, 18, "开机启动");
 
     sync_ui(hwnd, &cfg);
 
-    let win_h = chk_y + 18 + MARGIN + 31;
+    let client_h = chk_y + 18 + MARGIN;
+    // 外框 − 客户区的差值**实测**，不写死：边框宽度和标题栏高度都随系统版本 / 主题 / DPI 变。
+    // 之前这里把外框尺寸当客户区尺寸用，还硬编码了 `+31` 当标题栏高度。
+    let (fw, fh) = frame_delta(hwnd);
     unsafe {
-        let _ = SetWindowPos(hwnd, HWND_TOP, 0, 0, win_w, win_h, SWP_NOMOVE | SWP_NOZORDER);
+        let _ = SetWindowPos(
+            hwnd,
+            HWND_TOP,
+            0,
+            0,
+            client_w + fw,
+            client_h + fh,
+            SWP_NOMOVE | SWP_NOZORDER,
+        );
+    }
+}
+
+/// 外框尺寸 − 客户区尺寸（宽 / 高）。窗口还没定稿时调用也安全：拿的是当前样式下的真实差值。
+fn frame_delta(hwnd: HWND) -> (i32, i32) {
+    unsafe {
+        let mut wr = RECT::default();
+        let mut cr = RECT::default();
+        let _ = windows::Win32::UI::WindowsAndMessaging::GetWindowRect(hwnd, &mut wr);
+        let _ = GetClientRect(hwnd, &mut cr);
+        let fw = (wr.right - wr.left) - (cr.right - cr.left);
+        let fh = (wr.bottom - wr.top) - (cr.bottom - cr.top);
+        (fw.max(0), fh.max(0))
     }
 }
 
@@ -761,6 +821,13 @@ pub fn run(cfg: AppConfig) {
     let shared = SharedState::new(cfg);
     let _ = SHARED.set(shared.clone());
 
+    // 自愈：用户勾了开机启动，就把启动项刷成**当前这个 exe 的路径**。
+    // 否则改了产物名 / 换了目录后，注册表里会留一条指向旧副本的死项——
+    // 表现为「我明明设了自动清理，可它从来没跑」。
+    if shared.cfg.read().map(|g| g.autostart).unwrap_or(false) {
+        set_autostart(true);
+    }
+
     let scheduler = crate::core::scheduler::Scheduler::new(shared.cfg.clone());
     scheduler.start();
 
@@ -799,8 +866,6 @@ pub fn run(cfg: AppConfig) {
         ) else {
             return;
         };
-        apply_ui_font(hwnd);
-
         let title = "WinMemCleaner";
         let _ = SetWindowTextW(hwnd, PCWSTR(crate::core::util::wide(title).as_ptr()));
 

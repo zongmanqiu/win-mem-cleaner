@@ -34,7 +34,8 @@
 | `.cargo/config.toml` | 把编译产物钉到 `../temp/target`（不在源码树里） | 环境约定，见 `AGENTS.md` §一 |
 | `build/build.ps1` | 构建入口；产物落 `.build/`，中间产物落 `.temp/` | 改了同步 `AGENTS.md` §一 |
 | `main/` 根文件 | 白名单外的文件不得存在 | `repo_root_has_no_stray_files` |
-| 全部文本文件 | 不得泄漏本机绝对路径 | `no_local_absolute_paths_leak` |
+| 全部文本文件 | 不得出现盘符绝对路径 | `no_local_absolute_paths_leak` |
+| 全部代码与脚本 | 不得出现「结束 / 注入 / 操作其它进程」的能力 | `tests/safety.rs` |
 
 ## 三、改动后的核对流程
 

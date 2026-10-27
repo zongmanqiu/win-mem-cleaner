@@ -1,7 +1,7 @@
 # WinMemCleaner — 轻量 Windows 内存清理工具
 
-**[⬇️ 下载 1.1.1 (Gitee)](https://gitee.com/qiuzongman/win-mem-cleaner/releases/download/1.1.1/WinMemCleaner_x64_1.1.1.zip)**
- ｜ **[⬇️ 下载 1.1.1 (GitHub)](https://github.com/zongmanqiu/win-mem-cleaner/releases/download/1.1.1/WinMemCleaner_x64_1.1.1.zip)**
+**[⬇️ 下载 1.1.2 (Gitee)](https://gitee.com/qiuzongman/win-mem-cleaner/releases/download/1.1.2/WinMemCleaner_x64_1.1.2.zip)**
+ ｜ **[⬇️ 下载 1.1.2 (GitHub)](https://github.com/zongmanqiu/win-mem-cleaner/releases/download/1.1.2/WinMemCleaner_x64_1.1.2.zip)**
  ｜ [Gitee主仓](https://gitee.com/qiuzongman/win-mem-cleaner)
  ｜ [GitHub镜像](https://github.com/zongmanqiu/win-mem-cleaner)
 
@@ -14,8 +14,8 @@
 
 - **两级内存清理**：标准（温和）/ 深度（强力，短暂卡顿）
 - **实时监控**：进度条 + 托盘图标显示物理/虚拟/缓存内存
-- **自动清理**：两种方式可各自配置、同时生效——每 N 分钟清理一次 / 内存占用超过 X% 时清理，各自选择强度；支持全屏避让
-- **开机启动**：注册表静默自启
+- **自动清理**：两种方式可同时生效，**档位固定**——每 N 分钟做一次**标准**清理 / 物理内存超过 X% 时做一次**深度**清理。改完最迟 5 秒生效；每行右侧显示该方式「上次自动清理」的时刻（`hh:mm`，没跑过是 `--:--`）。想手动选档走托盘右键菜单
+- **开机启动**：计划任务（登录触发 + 最高权限）静默自启；每次启动自动把启动项刷成当前 exe 路径，搬家/改名不留死项
 - **便携**：配置文件 `WinMemCleaner.json` 与 exe 同级，不往用户目录写文件，拷走即带走全部设置
 - **单实例**：第二次启动自动激活已有窗口
 - **极小体积**：单文件 exe 约 0.4 MB，无运行库依赖

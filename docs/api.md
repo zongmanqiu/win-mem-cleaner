@@ -16,6 +16,10 @@ let wide = wide("Hello");
 ### `pub fn wide_to_string(buf: &[u16]) -> String`
 将 UTF-16 缓冲区转换为 String。遇第一个 NUL 停止。
 
+### `pub fn local_time() -> (u32, u32, u32)`
+本机当前时间 `(时, 分, 秒)`（`GetLocalTime`，已按本地时区换算）。
+只为「上次自动清理」显示而存在——不为一个时间戳引入日期时间库。
+
 ---
 
 ## core::config — 配置持久化
@@ -25,12 +29,13 @@ let wide = wide("Hello");
 
 | 字段 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
-| `interval_minutes` | `u32` | `5` | 方式一（定时）：清理间隔（分钟） |
-| `interval_level` | `u32` | `1` | 方式一：清理强度 1=标准 2=深度（兼容旧字段名 `level`） |
-| `threshold_percent` | `u32` | `85` | 方式二（阈值）：物理内存占用超过该百分比时触发 |
-| `threshold_level` | `u32` | `2` | 方式二：清理强度 1=标准 2=深度 |
-| `fullscreen_avoid` | `bool` | `true` | 全屏/游戏中自动避让 |
-| `autostart` | `bool` | `false` | 开机启动 |
+| `interval_minutes` | `u32` | `5` | 方式一：每隔多少分钟做一次**标准**清理 |
+| `threshold_percent` | `u32` | `85` | 方式二：物理内存占用超过该百分比时做一次**深度**清理 |
+| `autostart` | `bool` | `false` | 开机启动（首选计划任务，退回 Run 键；每次启动自愈为当前 exe 路径） |
+
+> 1.1.2 起两种方式**只配参数、不配档位**：定时＝标准、阈值＝深度（`scheduler.rs` 里的
+> `INTERVAL_LEVEL` / `THRESHOLD_LEVEL` 常量）。原先的 `interval_level` / `threshold_level` /
+> `fullscreen_avoid` 三个字段已删除，老配置里残留的这些键会被安全忽略。
 
 两种方式互相独立、可同时生效；`interval_minutes` 与 `threshold_percent` 只接受整数，
 `threshold_percent` 上限取 99（100% 永远不会被超过）。
@@ -109,10 +114,6 @@ pub struct MemSnapshot {
 - `1`（标准）：合并物理内存页 + 裁剪进程工作集 + 清理系统文件缓存 + 低优先级备用内存
 - `2`（深度）：标准全部 + 系统级清空工作集 + 清空 Standby + 冲刷 Modified 页
 
-#### `pub fn is_game_or_fullscreen() -> bool`
-判断当前是否在「全屏/游戏/演示」状态（用于自动清理避让）。
-只看**前台**窗口是否铺满其所在显示器；`QUNS_BUSY` 不作判据（后台常驻的全屏覆盖层会让它长期为真）。
-
 ### 底层清理函数
 
 | 函数 | 说明 |
@@ -136,13 +137,21 @@ pub struct MemSnapshot {
 创建调度器实例。
 
 ### `Scheduler::start(&self)`
-启动后台清理线程，两种方式各自独立判定：
-- 定时：距上次触发 ≥ `interval_minutes` → 按 `interval_level` 清理
-- 阈值：**物理内存**占用 > `threshold_percent`% → 按 `threshold_level` 清理；
-  触发后有 60 秒静默期，避免占用长期停留在阈值上方时反复清理；
+启动后台清理线程，两种方式各自独立判定（每 5 秒一轮，**每轮重读配置**，故改完设置最迟 5 秒生效）：
+- 定时：距上次触发 ≥ `interval_minutes` → 做一次**标准**清理（`INTERVAL_LEVEL`）
+- 阈值：**物理内存**占用 > `threshold_percent`% → 做一次**深度**清理（`THRESHOLD_LEVEL`）；
   只判物理内存，提交量与缓存比值不参与（见 README「运行环境」）
-- 两种方式在同一轮都到期时，优先执行阈值方式（内存压力优先）
-- 两种触发都受全屏避让约束
+- 同一轮两者都到期时优先阈值方式，并把定时那一轮顺延（避免 5 秒内连清两次）
+- **静默期与回弹退避**：阈值清理后进入静默期（初始 60 秒）；30 秒后复查，
+  若占用又越过阈值，说明这块内存是活跃负载在 refill（清不动），静默期翻倍，上限 15 分钟；
+  复查通过则回到 60 秒。目的是不在跑构建的机器上每分钟卡用户一次。
+
+### `pub enum Slot { Interval, Threshold }`
+两种自动清理方式，同时用作 `LAST_RUN` 的下标。
+
+### `pub fn last_run(slot: Slot) -> Option<(u32, u32, u32)>`
+该方式**本次运行以来**上次自动清理的 `(时, 分, 秒)`；`None` = 从未执行（主窗口显示 `--:--`）。
+手动托盘清理不记录——那是用户自己按的，不是"自动清理没生效"。
 
 ### `Scheduler::stop(&self)`
 停止清理线程。

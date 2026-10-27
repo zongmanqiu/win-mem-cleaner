@@ -246,13 +246,24 @@ fn license_is_verbatim_agpl3() {
     }
 }
 
-/// ⑥ 仓库文本文件不得泄漏本机绝对路径（换台电脑即失效，且泄露开发者目录）。
-/// 占位示例（`C:\App`、`D:\素材`）不算；这里钉的是真实工作目录 / 真实用户名。
+/// ⑥ 仓库文本文件不得出现**盘符绝对路径**（字母 + 冒号 + 单个斜杠）——换台电脑即失效，
+/// 还会把开发者机器上的目录结构写进公开仓库。
+/// 判据是**结构性**的：不点名任何具体目录或用户名，所以本文件自身也在扫描范围内。
+/// 旧版靠四个写死的字符串当判据，两头都错：既把开发机目录原样留在了仓库里，
+/// 又漏掉了没点名的真实目录——文档里就这么红着漏过去一次。
 #[test]
 fn no_local_absolute_paths_leak() {
+    // 自检钉子：先证明这把尺子会红，再拿它去量仓库
+    for sep in ['\\', '/'] {
+        let sample: String = ['C', ':', sep].into_iter().collect();
+        assert_eq!(drive_path_at(&sample), Some(0), "钉子失效：没认出 {sample:?}");
+    }
+    assert_eq!(drive_path_at("https://gitee.com/x"), None, "误报：协议前缀当成盘符路径");
+    assert_eq!(drive_path_at("01:38:15"), None, "误报：时间戳当成盘符路径");
+    assert_eq!(drive_path_at(r"HKCU\Software\CurrentVersion\Run"), None, "误报：注册表路径没有盘符");
+
     let root = repo_root();
     const TEXT_EXT: &[&str] = &["rs", "md", "toml", "ps1", "manifest", "txt", "json", "bat", "lock"];
-    const NEEDLES: &[&str] = &["AI.Agent", "AI\\Agent", "Users\\user", "Users/user"];
 
     fn walk(dir: &Path, hits: &mut Vec<String>) {
         let Ok(rd) = std::fs::read_dir(dir) else {
@@ -272,19 +283,14 @@ fn no_local_absolute_paths_leak() {
             if !TEXT_EXT.contains(&ext) {
                 continue;
             }
-            // 本文件自身定义了上面的 NEEDLES，必然含这些串——豁免检测器本身，
-            // 否则门禁一开机就扫到自己（CurSeen 同款处理）。
-            if p.file_name().and_then(|n| n.to_str()) == Some("docs.rs") {
-                continue;
-            }
             let Ok(text) = std::fs::read_to_string(&p) else {
                 continue; // 二进制 / 非 UTF-8 不扫
             };
             for (i, line) in text.lines().enumerate() {
-                for n in NEEDLES {
-                    if line.contains(n) {
-                        hits.push(format!("{}:{}  含 {n:?}", file_name(&p), i + 1));
-                    }
+                if let Some(off) = drive_path_at(line) {
+                    let col = line[..off].chars().count(); // off 是字节下标，显示要字符下标
+                    let shown: String = line[off..].chars().take(16).collect();
+                    hits.push(format!("{}:{} 列 {} 起 `{shown}`", file_name(&p), i + 1, col + 1));
                 }
             }
         }
@@ -297,8 +303,30 @@ fn no_local_absolute_paths_leak() {
     walk(&root, &mut hits);
     assert!(
         hits.is_empty(),
-        "仓库里泄漏了本机绝对路径：\n  {}\n\
+        "仓库里泄漏了盘符绝对路径：\n  {}\n\
          ——路径一律用相对或 env!(\"CARGO_MANIFEST_DIR\") 派生，别把开发机目录写进仓库",
         hits.join("\n  ")
     );
+}
+
+/// 行内第一个「盘符绝对路径」的起始字节下标。`://`（协议前缀）与 `12:30` 不算。
+fn drive_path_at(line: &str) -> Option<usize> {
+    let b = line.as_bytes();
+    for i in 0..b.len() {
+        if !b[i].is_ascii_alphabetic() {
+            continue;
+        }
+        if i + 2 >= b.len() || b[i + 1] != b':' {
+            continue;
+        }
+        let sep = b[i + 2];
+        if sep != b'\\' && sep != b'/' {
+            continue;
+        }
+        if i + 3 < b.len() && b[i + 3] == sep {
+            continue; // `http://` 里的 `s://`
+        }
+        return Some(i);
+    }
+    None
 }

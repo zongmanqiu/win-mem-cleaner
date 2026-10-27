@@ -37,7 +37,7 @@ fn main() {
     
     // 设置 VERSIONINFO 资源，让任务管理器显示正确的程序名称
     // 版本号从 Cargo.toml 读取，单一来源
-    let pkg_version = std::env::var("CARGO_PKG_VERSION").unwrap_or_else(|_| "1.1.0".into());
+    let pkg_version = std::env::var("CARGO_PKG_VERSION").unwrap_or_else(|_| "1.1.2".into());
     res.set("FileDescription", "WinMemCleaner");
     res.set("ProductName", "WinMemCleaner");
     res.set("ProductVersion", &pkg_version);

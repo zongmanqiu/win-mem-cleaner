@@ -15,12 +15,18 @@
   `CBN_CLOSEUP 8 / CBN_SELENDOK 9`。
 - **出处**：v1.1.0 修复，见 `docs/changes.md`。
 
-## 2. `SS_NOTIFY` = `0x0100`，`0x0200` 是 `SS_RIGHT`
+## 2. 静态控件的 `0x0200` 是 `SS_CENTERIMAGE`，不是 `SS_RIGHT`
 
-- **现象**：关于对话框的仓库链接文字右偏、点击不灵。
-- **根因**：静态控件要收鼠标通知必须 `SS_NOTIFY`（`0x0100`）；写成 `0x0200` 实际设的是 `SS_RIGHT`（右对齐）。
-- **判据**：`WinUser.h` 中 `SS_CENTER 0x00000001`、`SS_NOTIFY 0x00000100`。
-- **出处**：v1.1.0 修复。
+- **现象**：关于对话框的仓库链接点击不灵（当时还记为"文字右偏"）。
+- **根因**：静态控件要收到鼠标通知必须带 `SS_NOTIFY`（`0x0100`）。当年写成 `0x0200`，
+  那一位是 `SS_CENTERIMAGE`（单行文字垂直居中），既没打开通知、也不改变水平对齐。
+- **勘误**：本条原文把 `0x0200` 说成 `SS_RIGHT`，**是错的**——`SS_RIGHT = 0x00000002`。
+  所以"右偏"这个现象当时就没有被解释对；真正被证实并修好的只有"点了没反应"。
+- **判据**：`WinUser.h` 的 `Static Control Constants` 一整段：`SS_LEFT 0x0 / SS_CENTER 0x1 /
+  SS_RIGHT 0x2 / SS_NOTIFY 0x100 / SS_CENTERIMAGE 0x200 / SS_RIGHTJUST 0x400 /
+  SS_EDITCONTROL 0x2000`。⇒ **常量一律查头文件，不要背。** 本项目 `lbl()` 用的 `0x200`
+  是有意要垂直居中。
+- **出处**：v1.1.0 修复（常量改对，成因写错）；v1.1.2 复核 `WinUser.h` 时勘误。
 
 ## 3. `GetPerformanceInfo` 的数值字段单位是「页」
 
@@ -28,7 +34,10 @@
 - **根因**：`PERFORMANCE_INFORMATION`（`Psapi.h`）里 `PhysicalTotal / SystemCache / CommitTotal` 等
   全是**页数**，须乘 `PageSize`。
 - **判据**：本机实测 `SystemCache = 1,245,146 页 × 4096 = 4.75 GB`（占物理 30%）。
-- **出处**：v1.1.0「系统缓存」读数修正。
+- **补（v1.1.2 实测）**：这台 **10.0.26200** 上 `GetPerformanceInfo` 只接受 `cb = 104`，传 88 直接
+  `ERROR_BAD_LENGTH(24)`。差的 16 字节是 `CommitPeak` 和末尾的 `ThreadCount`——`windows` crate 0.58
+  的定义里有，手写复刻时漏掉就会"API 怎么都失败"。**自己拼 Win32 结构体前先跟头文件逐字段核对。**
+- **出处**：v1.1.0「系统缓存」读数修正；v1.1.2 采样器踩 `cb` 长度。
 
 ## 4. 未文档化的 `SystemFileCacheInformation` 结构布局不可信
 
@@ -87,4 +96,56 @@
 - **判据**：前台是普通最大化窗口（`Chrome_WidgetWin_1`，`-8,-8,1928,1040`，任务栏可见）时 QUNS 仍为 2；
   枚举铺满监视器的窗口只有该覆盖层 + `TextInputHost`（DWM cloaked=2）+ `Progman`（桌面）。
   改用「前台窗口是否铺满其所在显示器」后，同一时刻返回 false；用全屏窗口占住前台则返回 true。
-- **出处**：v1.1.1 修复，见 `docs/changes.md`。
+- **出处**：v1.1.1 修复（改为只看前台窗口），见 `docs/changes.md`。
+  **v1.1.2 进一步把「全屏避让」整个开关删掉了**——它带来的静默失效比偶尔一次卡顿更伤；
+  取而代之的是清理后的「回弹退避」。本条作为 Win32 事实保留，防止将来重犯。
+
+## 10. `requireAdministrator` 的程序不能只靠 `HKCU\...\Run` 常驻
+
+- **现象（实测）**：用户报告"设了 80% 阈值清理却没效果"。查下来：机器连续开机 **6 天 10 小时**、
+  托盘程序**无进程**；注册表 `Run` 项 `memclean` 指向**运行目录**那份 `WinMemCleaner.exe`（1.1.1），
+  而开发产物在仓库侧的 `.build`（1.1.2）——**改的和你开机跑的不是同一个文件**。
+  那份配置里 `threshold_percent: 80`、`autostart: true` 都是对的，设置从来没丢过。
+- **机制推断（本机未验证：6 天没重启，复现不了登录场景）**：清单为 `requireAdministrator` 的程序放在
+  `HKCU\Run`，登录时会弹 UAC 同意框；没人点 → 进程不启动 → 这段时间里"自动清理"根本不存在。
+- **判据 / 解法**：开机自动提权要用**计划任务**（`schtasks /sc ONLOGON /rl HIGHEST`），不是 Run 键。
+  1.1.2 起：首选计划任务、建不了退回 Run 键、两者只留一条，且**每次启动把启动项刷成当前 exe 路径**（自愈）。
+- **怎么查**：`reg query "HKCU\Software\Microsoft\Windows\CurrentVersion\Run"`（输出是 UTF-16，
+  直接管道给 grep 会被判成二进制，先转码）+ `schtasks /query /tn WinMemCleaner`。
+- **出处**：v1.1.2。★ "登录弹 UAC"那半句仍是推断，下次真重启时看一眼托盘即可定性。
+
+## 11. 子控件**不继承**父窗口字体，`WM_SETFONT` 得逐个发
+
+- **现象（实测）**：把 `apply_ui_font()` 从"窗口创建后"挪到"布局之前"之后，主界面所有文字变宽，
+  末位字符被裁——`15.8 GB` 画成 `15.8 G`、`--:--` 画成 `--:-`。
+- **根因**：`STATIC` / `BUTTON` / `EDIT` 都**不继承**父窗口的字体。原实现靠
+  `apply_ui_font` 末尾那次 `EnumChildWindows` 给每个子控件补 `WM_SETFONT`；一旦它在子控件存在
+  之前运行，就没有任何东西可补，控件全部退回系统默认 GUI 字体（比消息字体宽）。
+- **判据 / 解法**：字体是控件自己的事——`make_child` / `edt` 在 `CreateWindowExW` 之后立刻
+  `SendMessageW(child, WM_SETFONT, KEEP_FONT, TRUE)`。这样"先设字体再布局"和"先布局再设字体"
+  两种顺序都成立，`measure_text_width` 量到的和画出来的才是同一个字体。
+- **顺带**：本项目是 Per-MonitorV2，窗口先建在 `(-100,-100)` 再移到工作区，所以布局期用的 DC
+  与最终落位可能不同上下文——字体对齐之后这条不再有可见影响，但改窗口尺寸逻辑时别指望它。
+- **出处**：v1.1.2（自己改出来的回归，像素比对抓回来的）。
+
+## 12. 外框尺寸 ≠ 客户区尺寸：`SetWindowPos` 要的是**外框**
+
+- **现象（实测）**：「自动清理」分组框的右竖线画在窗口边框上，右边距 0；左右不对称（左边距 14）。
+- **根因**：`create_ui` 里所有控件坐标都是**客户区**坐标，但 `box_w = win_w - MARGIN*2` 的 `win_w`
+  是直接交给 `SetWindowPos` 的**外框**宽度。两者差一整圈非客户边框，凡是贴右边算的东西
+  （分组框宽、右对齐的时刻列）都被推出客户区。标题栏高度同理——原来还硬编码了 `+31`。
+- **判据 / 解法**：布局一律用客户区尺寸，最后一步换算：`frame_delta()` 用
+  `GetWindowRect − GetClientRect` **实测**边框差再相加。边框宽度与标题栏高度都随系统版本 /
+  主题 / DPI 变，写死数字迟早错。
+- **出处**：v1.1.2。
+
+## 13. `GetTextExtentPoint32W` 的字符数：windows-rs 传的是**切片长度**
+
+- **现象**：`measure_text_width` 用 `util::wide(text)` 的结果去量宽。
+- **根因**：`util::wide` 返回**带结尾 NUL** 的 `Vec<u16>`；windows-rs 的绑定把
+  `lpstring.len()` 当作 Win32 的 `c`（字符数）参数传下去 ⇒ 多算一枚 NUL 字模的推进宽度。
+  方向是"量多了"，所以不会裁字，但会让窗口比必要的宽。
+- **判据**：`windows-0.58.0` 的绑定体 `GetTextExtentPoint32W(hdc, transmute(lpstring.as_ptr()),
+  lpstring.len(), psizl)`——`c` 就是切片长度。
+- **解法**：量之前把结尾 NUL 切掉：`&wide[..wide.len()-1]`。
+- **出处**：v1.1.2 复核布局时顺手修。

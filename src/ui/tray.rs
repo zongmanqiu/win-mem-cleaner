@@ -9,6 +9,7 @@
 
 use std::mem::size_of;
 use std::thread;
+use std::time::Instant;
 
 use windows::core::w;
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, WPARAM, BOOL};
@@ -203,6 +204,41 @@ struct TrayState {
     icon: HICON,
 }
 
+/// 托盘启动时刻，用于 tooltip 上的「已运行」——一眼看出这个常驻进程到底在不在岗。
+static START: OnceLock<Instant> = OnceLock::new();
+
+fn uptime_text() -> String {
+    let secs = START.get_or_init(Instant::now).elapsed().as_secs();
+    let (d, h, m) = (secs / 86400, (secs % 86400) / 3600, (secs % 3600) / 60);
+    if d > 0 {
+        format!("{d}天{h}时")
+    } else if h > 0 {
+        format!("{h}时{m}分")
+    } else {
+        format!("{m}分")
+    }
+}
+
+/// 三项指标 + 运行时长。`szTip` 上限 127 字符，这里刻意保持简短。
+fn build_tip() -> String {
+    let snap = mem::memory_snapshot();
+    format!(
+        "物理内存  {} / {}  ({}%)\n虚拟内存  {} / {}  ({}%)\n系统缓存  {} / {}  ({}%)\n已运行 {}",
+        mem::format_bytes(snap.phys_used), mem::format_bytes(snap.phys_total), snap.phys_percent,
+        mem::format_bytes(snap.page_used), mem::format_bytes(snap.page_total), snap.page_percent,
+        mem::format_bytes(snap.cache_bytes), mem::format_bytes(snap.phys_total), snap.cache_percent,
+        uptime_text(),
+    )
+}
+
+/// 把 tooltip 写进 `NOTIFYICONDATAW`（按字符截断，绝不切半个汉字）。
+fn fill_tip(nid: &mut NOTIFYICONDATAW, tip: &str) {
+    let wide = crate::core::util::wide(tip);
+    let copy_len = wide.len().min(127);
+    nid.szTip[..copy_len].copy_from_slice(&wide[..copy_len]);
+    nid.szTip[copy_len - 1] = 0;
+}
+
 fn tick_update(hwnd: HWND) {
     unsafe {
         let st = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut TrayState;
@@ -213,14 +249,8 @@ fn tick_update(hwnd: HWND) {
         let snap = mem::memory_snapshot();
         let pct = snap.phys_percent;
 
-        // 重新渲染 tooltip（每秒更新三项指标，分三行显示）
-        let tip = format!(
-            "物理内存  {} / {}  ({}%)\n虚拟内存  {} / {}  ({}%)\n系统缓存  {} / {}  ({}%)",
-            mem::format_bytes(snap.phys_used), mem::format_bytes(snap.phys_total), snap.phys_percent,
-            mem::format_bytes(snap.page_used), mem::format_bytes(snap.page_total), snap.page_percent,
-            mem::format_bytes(snap.cache_bytes), mem::format_bytes(snap.phys_total), snap.cache_percent,
-        );
-        let tip_wide = crate::core::util::wide(&tip);
+        // 重新渲染 tooltip（每秒更新三项指标 + 运行时长）
+        let tip = build_tip();
 
         let mut modify_flags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
         if st.last_pct != pct {
@@ -244,12 +274,7 @@ fn tick_update(hwnd: HWND) {
             hIcon: st.icon,
             ..Default::default()
         };
-        // 拷贝 tooltip 文本（最多 128 字符含 NUL）
-        let copy_len = tip_wide.len().min(127);
-        for (i, &ch) in tip_wide[..copy_len].iter().enumerate() {
-            nid.szTip[i] = ch;
-        }
-        nid.szTip[copy_len] = 0;
+        fill_tip(&mut nid, &tip);
         let _ = Shell_NotifyIconW(NIM_MODIFY, &nid);
     }
 }
@@ -327,15 +352,8 @@ fn add_tray_icon(hwnd: HWND) -> bool {
         } else {
             (*st).icon
         };
-        // 构造初始 tooltip（三行）
-        let snap = mem::memory_snapshot();
-        let tip = format!(
-            "物理内存  {} / {}  ({}%)\n虚拟内存  {} / {}  ({}%)\n系统缓存  {} / {}  ({}%)",
-            mem::format_bytes(snap.phys_used), mem::format_bytes(snap.phys_total), snap.phys_percent,
-            mem::format_bytes(snap.page_used), mem::format_bytes(snap.page_total), snap.page_percent,
-            mem::format_bytes(snap.cache_bytes), mem::format_bytes(snap.phys_total), snap.cache_percent,
-        );
-        let tip_wide = crate::core::util::wide(&tip);
+        // 初始 tooltip（与每秒刷新同一份构造，避免两处漂移）
+        let tip = build_tip();
         let mut nid = NOTIFYICONDATAW {
             cbSize: size_of::<NOTIFYICONDATAW>() as u32,
             hWnd: hwnd,
@@ -345,11 +363,7 @@ fn add_tray_icon(hwnd: HWND) -> bool {
             hIcon: icon,
             ..Default::default()
         };
-        let copy_len = tip_wide.len().min(127);
-        for (i, &ch) in tip_wide[..copy_len].iter().enumerate() {
-            nid.szTip[i] = ch;
-        }
-        nid.szTip[copy_len] = 0;
+        fill_tip(&mut nid, &tip);
         Shell_NotifyIconW(NIM_ADD, &nid).as_bool()
     }
 }

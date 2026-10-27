@@ -23,7 +23,8 @@ main/
 │       └── about.rs        关于对话框
 ├── tests/                  测试
 │   ├── smoke.rs            冒烟测试（核心逻辑 + 配置便携性）
-│   └── docs.rs             文档一致性门禁
+│   ├── docs.rs             文档一致性门禁
+│   └── safety.rs           安全门禁：不得具备结束/注入其它进程的能力
 ├── docs/                   项目文档（见 DOCS_MANIFEST.md）
 ├── build/                  构建脚本（源码，非产物）
 │   └── build.ps1           PowerShell 构建脚本
@@ -51,7 +52,7 @@ main/
 |------|------|
 | `mem.rs` | 内存清理：进程工作集修剪、系统缓存清理、Native API 动态加载、权限提升、内存信息采集（物理/提交/缓存） |
 | `config.rs` | 配置：JSON 持久化（exe 同级 `WinMemCleaner.json`，便携）、默认值、sanity check |
-| `scheduler.rs` | 调度：后台线程轮询，定时清理 / 内存阈值清理 + 全屏/游戏避让 |
+| `scheduler.rs` | 调度：后台线程轮询，定时清理 / 内存阈值清理 + 静默期与回弹退避 + 上次执行时刻 |
 | `util.rs` | 工具：UTF-8 ↔ UTF-16 转换 |
 
 ### src/ui/ — 界面层（View + Controller）
@@ -60,7 +61,7 @@ main/
 
 | 文件 | 职责 |
 |------|------|
-| `window.rs` | 主窗口：UI 创建、窗口过程、自绘进度条、控件交互、开机启动、字体设置 |
+| `window.rs` | 主窗口：UI 创建、窗口过程、自绘进度条、控件交互、开机启动（计划任务 + Run 键兜底 + 启动自愈）、字体设置 |
 | `tray.rs` | 系统托盘：实时内存%图标（绿→黄→红）、tooltip 三项指标、右键菜单 |
 | `about.rs` | 关于对话框：版本、作者、仓库链接（Gitee / GitHub）、赞助二维码 |
 
@@ -70,6 +71,7 @@ main/
 |------|------|
 | `smoke.rs` | 冒烟测试：核心逻辑、配置默认值 / sanitize / JSON 往返 / 便携路径 |
 | `docs.rs` | 文档一致性门禁：清单文件存在、结构文档覆盖 src 模块、LICENSE 逐字、目录纯净、无路径泄漏 |
+| `safety.rs` | 安全门禁：扫全部代码与脚本，钉住「本程序只能释放内存，永远不具备结束 / 注入 / 操作其它进程的能力」 |
 
 ### docs/ — 项目文档
 
@@ -82,7 +84,7 @@ main/
 
 | 文件 | 职责 |
 |------|------|
-| `build.ps1` | PowerShell 构建脚本（Release/Debug/Clean），产物拷进 `.build/` |
+| `build.ps1` | PowerShell 构建脚本（Release/Debug/Clean/`-Deploy <运行目录>`），产物拷进 `.build/`，`-Deploy` 再拷一份到实际运行的目录 |
 
 ### image/ — 图片资源
 

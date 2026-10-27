@@ -19,10 +19,7 @@ fn smoke_core_modules_load() {
 fn smoke_config_load() {
     let cfg = memclean::core::config::AppConfig::defaults();
     assert_eq!(cfg.interval_minutes, 5);
-    assert_eq!(cfg.interval_level, 1);
     assert_eq!(cfg.threshold_percent, 85);
-    assert_eq!(cfg.threshold_level, 2);
-    assert!(cfg.fullscreen_avoid);
     assert!(!cfg.autostart);
 }
 
@@ -57,13 +54,9 @@ fn smoke_config_sanitize() {
     let mut cfg = memclean::core::config::AppConfig::defaults();
     cfg.interval_minutes = 0;   // 超出范围
     cfg.threshold_percent = 0;   // 超出范围
-    cfg.interval_level = 99;     // 非法值
-    cfg.threshold_level = 0;     // 非法值
     cfg.sanitize();
     assert_eq!(cfg.interval_minutes, 1);   // 被 clamp 到最小值
     assert_eq!(cfg.threshold_percent, 1);  // 被 clamp 到最小值
-    assert_eq!(cfg.interval_level, 1);     // 被重置为默认
-    assert_eq!(cfg.threshold_level, 2);    // 被重置为默认
 }
 
 /// 验证配置边界值
@@ -86,6 +79,14 @@ fn smoke_config边界值() {
     cfg.threshold_percent = 99;
     cfg.sanitize();
     assert_eq!(cfg.threshold_percent, 99);
+}
+
+/// 验证「上次自动清理」初始为「从未执行」——主窗口据此显示 `--:--`
+#[test]
+fn smoke_last_run_starts_empty() {
+    use memclean::core::scheduler::Slot;
+    assert_eq!(memclean::core::scheduler::last_run(Slot::Interval), None);
+    assert_eq!(memclean::core::scheduler::last_run(Slot::Threshold), None);
 }
 
 /// 验证工具函数 wide/wide_to_string 往返一致性
@@ -187,16 +188,6 @@ fn smoke_is_admin() {
     let _ = memclean::core::mem::is_admin();
 }
 
-/// 验证全屏检测函数可以调用
-#[test]
-#[cfg(windows)]
-fn smoke_is_game_or_fullscreen() {
-    // 在测试环境中应该返回 false
-    let result = memclean::core::mem::is_game_or_fullscreen();
-    // 不做断言，只验证不 panic
-    let _ = result;
-}
-
 /// 验证清理函数可以调用（标准级别）
 #[test]
 #[cfg(windows)]
@@ -213,10 +204,7 @@ fn smoke_config_json_roundtrip() {
     let json = serde_json::to_string(&cfg).unwrap();
     let back: memclean::core::config::AppConfig = serde_json::from_str(&json).unwrap();
     assert_eq!(cfg.interval_minutes, back.interval_minutes);
-    assert_eq!(cfg.interval_level, back.interval_level);
     assert_eq!(cfg.threshold_percent, back.threshold_percent);
-    assert_eq!(cfg.threshold_level, back.threshold_level);
-    assert_eq!(cfg.fullscreen_avoid, back.fullscreen_avoid);
     assert_eq!(cfg.autostart, back.autostart);
 }
 
@@ -227,7 +215,7 @@ fn smoke_config_json_unknown_fields() {
     let cfg: memclean::core::config::AppConfig = serde_json::from_str(json).unwrap();
     assert_eq!(cfg.interval_minutes, 10);
     assert_eq!(cfg.threshold_percent, 90);
-    assert_eq!(cfg.threshold_level, 2); // 缺失字段用默认值
+    assert!(!cfg.autostart); // 缺失字段用默认值
 }
 
 /// 验证配置 JSON 反序列化容错（缺失字段用默认值）
@@ -235,19 +223,22 @@ fn smoke_config_json_unknown_fields() {
 fn smoke_config_json_missing_fields() {
     let json = r#"{}"#;
     let cfg: memclean::core::config::AppConfig = serde_json::from_str(json).unwrap();
-    assert_eq!(cfg.interval_minutes, 5);  // 默认值
-    assert_eq!(cfg.interval_level, 1);    // 默认值
+    assert_eq!(cfg.interval_minutes, 5); // 默认值
     assert_eq!(cfg.threshold_percent, 85); // 默认值
-    assert_eq!(cfg.threshold_level, 2);   // 默认值
 }
 
-/// 验证 1.0.x 旧配置（单一 level 字段）读入后落到「方式一：定时清理」
+/// 验证历史版本删掉的键全部被安全忽略：老用户磁盘上的 JSON 带着这些键，
+/// 不能因此读失败、也不能把用户保留的值清零。（1.1.2 删了全屏避让与两个档位字段）
 #[test]
-fn smoke_config_json_旧字段兼容() {
-    let json = r#"{"interval_minutes": 10, "level": 2}"#;
+fn smoke_config_json_忽略已删除的旧键() {
+    let json = r#"{"interval_minutes": 7, "threshold_percent": 80,
+                   "fullscreen_avoid": true, "interval_level": 1, "threshold_level": 1, "level": 2}"#;
     let cfg: memclean::core::config::AppConfig = serde_json::from_str(json).unwrap();
-    assert_eq!(cfg.interval_minutes, 10);
-    assert_eq!(cfg.interval_level, 2);     // 旧 level 迁移为定时强度
-    assert_eq!(cfg.threshold_percent, 85); // 阈值方式取新默认
-    assert_eq!(cfg.threshold_level, 2);
+    assert_eq!(cfg.interval_minutes, 7); // 用户设的值原样保留
+    assert_eq!(cfg.threshold_percent, 80);
+    // 存盘走结构体字段，旧键不会被写回去——线上那份脏文件下次保存自然变干净
+    let out = serde_json::to_string(&cfg).unwrap();
+    for dead in ["fullscreen_avoid", "interval_level", "threshold_level", "\"level\""] {
+        assert!(!out.contains(dead), "重新存盘后仍写着已删除的键 {dead}：{out}");
+    }
 }

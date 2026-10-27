@@ -1,13 +1,18 @@
 ﻿# build.ps1 - WinMemCleaner 构建脚本
 #
 # 用法：
-#   .\build.ps1            # Release 构建
-#   .\build.ps1 -Debug     # Debug 构建
-#   .\build.ps1 -Clean     # 清理编译缓存
+#   .\build.ps1                          # Release 构建 → .build\WinMemCleaner.exe
+#   .\build.ps1 -Debug                   # Debug 构建
+#   .\build.ps1 -Clean                   # 清理编译缓存
+#   .\build.ps1 -Deploy <运行目录>        # 构建后把 exe 拷进「实际运行的目录」
+#
+# 为什么要 -Deploy：开机启动注册的是「当前 exe 所在路径」。只更新 .build 而不动
+# 运行目录，等于改了个没人执行的文件。
 
 param(
     [switch]$Debug,
-    [switch]$Clean
+    [switch]$Clean,
+    [string]$Deploy = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -53,6 +58,15 @@ try {
         Copy-Item $ExeSrc $ExeDst -Force
         $Size = (Get-Item $ExeDst).Length
         Write-Host "构建成功: $ExeDst ($([math]::Round($Size/1KB))KB)" -ForegroundColor Green
+    }
+
+    # 部署到实际运行目录（该目录里的 exe 若正在运行会占用文件，拷贝会直接报错而不是静默跳过）
+    if ($Deploy) {
+        if (!(Test-Path $Deploy)) { throw "部署目录不存在: $Deploy" }
+        $RunExe = Join-Path $Deploy "WinMemCleaner.exe"
+        Copy-Item $ExeSrc $RunExe -Force
+        Write-Host "已部署到运行目录: $RunExe" -ForegroundColor Green
+        Write-Host "  提示：程序下次启动会把开机启动项刷成这个路径（自愈）" -ForegroundColor DarkGray
     }
 } finally {
     Pop-Location
