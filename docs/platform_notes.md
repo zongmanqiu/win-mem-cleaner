@@ -73,6 +73,8 @@
 - **现象**：`explorer.exe` 重启（崩溃 / 手动重启）后托盘图标没了。
 - **根因**：托盘图标随 Shell 生命周期失效。
 - **判据**：`RegisterWindowMessageW("TaskbarCreated")` 收到即重新 `Shell_NotifyIconW(NIM_ADD)`。
+- **v1.1.3 补**：收到 `TaskbarCreated` 的那一次重加本身也可能失败（Shell 刚起来还没就绪）。
+  现在的做法是失败不清线程，交给 1 秒定时器继续重试，见第 14 条。
 - **出处**：v1.0.1 起已实现（`ui/tray.rs`）。
 
 ## 8. 含中文的 `.ps1` 被 PowerShell 5.1 按 GBK 解析
@@ -112,7 +114,8 @@
   1.1.2 起：首选计划任务、建不了退回 Run 键、两者只留一条，且**每次启动把启动项刷成当前 exe 路径**（自愈）。
 - **怎么查**：`reg query "HKCU\Software\Microsoft\Windows\CurrentVersion\Run"`（输出是 UTF-16，
   直接管道给 grep 会被判成二进制，先转码）+ `schtasks /query /tn WinMemCleaner`。
-- **出处**：v1.1.2。★ "登录弹 UAC"那半句仍是推断，下次真重启时看一眼托盘即可定性。
+- **出处**：v1.1.2。★ 2026-10-30 真机重启已证实：计划任务确实在登录时刻（10:30:05）拉起了程序，
+  上次结果 1 = 用户在任务管理器里结束了它。那次「托盘没有」是另一条缺陷（见第 14 条），不是启动失败。
 
 ## 11. 子控件**不继承**父窗口字体，`WM_SETFONT` 得逐个发
 
@@ -149,3 +152,34 @@
   lpstring.len(), psizl)`——`c` 就是切片长度。
 - **解法**：量之前把结尾 NUL 切掉：`&wide[..wide.len()-1]`。
 - **出处**：v1.1.2 复核布局时顺手修。
+
+## 14. 登录自启时 `Shell_NotifyIcon(NIM_ADD)` 会失败——失败不能丢线程
+
+- **现象**（用户报，真机）：开机后托盘没有图标；进程在（任务管理器里结束的就是它）、界面能打开；
+  结束进程再手动启动，图标正常。任务计划的「上次运行时间」= 登录时刻 ⇒ 自启本身是成功的。
+- **根因**：登录瞬间 Explorer 的任务栏还没就绪，`NIM_ADD` 失败。原实现 `if !add_tray_icon(hwnd) { return; }`
+  让托盘线程连同隐藏窗口、消息循环一起结束——之后既不重试，也收不到 `TaskbarCreated`。
+  主窗口与进程由主线程维持，于是表现为「进程在、没有入口」。
+- **判据（无人值守 A/B，本机）**：`CreateDesktopW` 建一个没有任务栏的桌面，用
+  `STARTUPINFO.lpDesktop` 把程序拉上去，等 9 秒后 `EnumDesktopWindows` 数窗口类：
+  - 旧代码：`MemCleanerTrayWindow` **不存在**（线程已退出），`MemCleanerMainWindow` 仍在、进程存活；
+  - 新代码：托盘窗口**仍在**，`Shell_NotifyIconGetRect` 返回 `E_FAIL`（图标确实没进通知区）
+    ⇒ 线程活着、在重试。
+  - 反向校验：正常桌面下同一程序 `Shell_NotifyIconGetRect` 返回 `S_OK`，矩形落在底右任务栏区
+    （实测 `1583,1032,1615,1080`，1920x1080）——「查不到」不是 API 失灵。
+- **修法**：`TrayState.added` + 1 秒定时器重试；`TaskbarCreated` 那一次重加失败同样交给定时器。
+- **出处**：v1.1.3。
+
+## 15. `schtasks /create` 默认带 72 小时执行上限与电池限制
+
+- **现象**：任务的「如果运行了 X 小时 X 分钟，停止任务」显示 `72:00:00`——常驻程序满三天被任务计划
+  结束（托盘消失、自动清理也停），而且没有任何提示。默认还有「不用电池启动 / 切电池就停止」，
+  笔记本上等于开机常驻随时下线。
+- **根因**：`schtasks.exe` 命令行选项里没有执行时间上限和电池设置，建出来的任务吃 Task Scheduler 默认值。
+- **判据 / 解法**：`schtasks /create /xml <file>` 显式写 `<ExecutionTimeLimit>PT0S</ExecutionTimeLimit>`
+  （不设上限）与 `DisallowStartIfOnBatteries=false` / `StopIfGoingOnBatteries=false`。
+  本机实测：用同样的 XML 设置块建一次性探针任务，`schtasks /query /v` 显示「停止任务: **已禁用**」、
+  「电源管理」一栏**为空**（默认任务那里写的是「在电池模式停止, 不用电池启动」）。
+  XML 必须是 Unicode（UTF-16LE + BOM），中文路径才不会乱码；`<LogonTrigger>` 的任务需要管理员
+  （本程序清单就是 `requireAdministrator`）。
+- **出处**：v1.1.3。

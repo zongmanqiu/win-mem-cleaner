@@ -423,7 +423,7 @@ fn restore_self_priority(prev: PROCESS_CREATION_FLAGS) {
 // 开机启动
 // ---------------------------------------------------------------------------
 /// 计划任务名。本程序清单是 `requireAdministrator`，走 `HKCU\Run` 会在**登录时弹 UAC**，
-/// 没人点就不启动——这是「常驻」最不可靠的一条路。计划任务 + `/rl HIGHEST` 才是正解。
+/// 没人点就不启动——这是「常驻」最不可靠的一条路。计划任务 + 最高权限运行才是正解。
 const TASK_NAME: &str = "WinMemCleaner";
 const RUN_VALUE: &str = "memclean";
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -439,12 +439,79 @@ fn schtasks(args: &[&str]) -> bool {
 }
 
 /// 注册/刷新计划任务（登录触发、最高权限）。失败返回 false，由调用方退回 Run 键。
+/// 首选 XML：它是唯一能关掉「72 小时执行上限」与电池限制的注册方式。
 fn schedule_task(exe: &std::path::Path) -> bool {
+    let xml_path = exe.with_file_name(".WinMemCleaner.task.xml");
+    if write_utf16le(&xml_path, &task_xml(exe)).is_ok() {
+        let path = xml_path.display().to_string();
+        let ok = schtasks(&["/create", "/f", "/tn", TASK_NAME, "/xml", &path]);
+        let _ = std::fs::remove_file(&xml_path);
+        if ok {
+            return true;
+        }
+    }
+    // 临时 XML 写不下（只读目录）或 schtasks 不认 ⇒ 退回命令行方式：
+    // 仍能开机启动，但会带回 72 小时执行上限。
     let action = format!("\"{}\" silent", exe.display());
     schtasks(&[
         "/create", "/f", "/tn", TASK_NAME,
         "/sc", "ONLOGON", "/rl", "HIGHEST", "/tr", &action,
     ])
+}
+
+/// 任务 XML 里 `ExecutionTimeLimit=PT0S` 才表示**不设**上限——schtasks 命令行建的
+/// 任务默认 72 小时，到点任务计划会把常驻进程结束掉（托盘无声消失，也没人再清理）。
+/// 电池两项同理：默认「不用电池启动 / 切电池就停止」，笔记本上等于常驻随时下线。
+fn task_xml(exe: &std::path::Path) -> String {
+    let exe = xml_escape(&exe.display().to_string());
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <Triggers>
+    <LogonTrigger>
+      <Enabled>true</Enabled>
+    </LogonTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>HighestAvailable</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <Enabled>true</Enabled>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>{exe}</Command>
+      <Arguments>silent</Arguments>
+    </Exec>
+  </Actions>
+</Task>
+"#
+    )
+}
+
+fn xml_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
+}
+
+/// schtasks 只吃 Unicode 的 XML；exe 路径可能含中文，必须按 UTF-16LE + BOM 写。
+fn write_utf16le(path: &std::path::Path, text: &str) -> std::io::Result<()> {
+    let mut bytes = Vec::with_capacity(text.len() * 2 + 2);
+    bytes.extend_from_slice(&[0xFF, 0xFE]);
+    for u in text.encode_utf16() {
+        bytes.extend_from_slice(&u.to_le_bytes());
+    }
+    std::fs::write(path, bytes)
 }
 
 fn delete_task() {
@@ -887,6 +954,30 @@ pub fn run(cfg: AppConfig) {
         while GetMessageW(&mut msg, None, 0, 0).as_bool() {
             let _ = TranslateMessage(&msg);
             DispatchMessageW(&msg);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::task_xml;
+
+    /// 常驻靠这张 XML。少一行设置就退回 schtasks 默认值：72 小时被任务计划结束、
+    /// 电池下根本不启动——都是"看起来设了开机启动、实际没在岗"的静默失效。
+    #[test]
+    fn task_xml_钉住常驻设置() {
+        let xml = task_xml(std::path::Path::new("a&b/WinMemCleaner.exe"));
+        for need in [
+            "<ExecutionTimeLimit>PT0S</ExecutionTimeLimit>",
+            "<DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>",
+            "<StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>",
+            "<MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>",
+            "<LogonType>InteractiveToken</LogonType>",
+            "<RunLevel>HighestAvailable</RunLevel>",
+            "<Arguments>silent</Arguments>",
+            "a&amp;b",
+        ] {
+            assert!(xml.contains(need), "任务 XML 少了 `{need}`:\n{xml}");
         }
     }
 }

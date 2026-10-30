@@ -1,7 +1,7 @@
 # WinMemCleaner — 轻量 Windows 内存清理工具
 
-**[⬇️ 下载 1.1.2 (Gitee)](https://gitee.com/qiuzongman/win-mem-cleaner/releases/download/1.1.2/WinMemCleaner_x64_1.1.2.zip)**
- ｜ **[⬇️ 下载 1.1.2 (GitHub)](https://github.com/zongmanqiu/win-mem-cleaner/releases/download/1.1.2/WinMemCleaner_x64_1.1.2.zip)**
+**[⬇️ 下载 1.1.3 (Gitee)](https://gitee.com/qiuzongman/win-mem-cleaner/releases/download/1.1.3/WinMemCleaner_x64_1.1.3.zip)**
+ ｜ **[⬇️ 下载 1.1.3 (GitHub)](https://github.com/zongmanqiu/win-mem-cleaner/releases/download/1.1.3/WinMemCleaner_x64_1.1.3.zip)**
  ｜ [Gitee主仓](https://gitee.com/qiuzongman/win-mem-cleaner)
  ｜ [GitHub镜像](https://github.com/zongmanqiu/win-mem-cleaner)
 

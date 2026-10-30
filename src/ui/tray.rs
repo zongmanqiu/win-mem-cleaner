@@ -202,6 +202,9 @@ fn util_wide(s: &str) -> Vec<u16> {
 struct TrayState {
     last_pct: u32,
     icon: HICON,
+    /// 图标当前是否真的进了通知区。登录自启时 Explorer 的任务栏常常还没建好，
+    /// 第一次 `NIM_ADD` 会失败；失败只记状态，由定时器继续重试。
+    added: bool,
 }
 
 /// 托盘启动时刻，用于 tooltip 上的「已运行」——一眼看出这个常驻进程到底在不在岗。
@@ -244,6 +247,12 @@ fn tick_update(hwnd: HWND) {
         let st = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut TrayState;
         if st.is_null() {
             return;
+        }
+        if !(*st).added {
+            (*st).added = add_tray_icon(hwnd, (*st).icon);
+            if !(*st).added {
+                return; // shell 还没就绪，下一拍再试
+            }
         }
         let st = &mut *st;
         let snap = mem::memory_snapshot();
@@ -313,16 +322,18 @@ fn run_tray_thread() {
         // 初始状态
         let initial_pct = mem::physical_usage_percent();
         let initial_icon = render_tray_icon(initial_pct);
-        let state = Box::new(TrayState {
+        let st = Box::into_raw(Box::new(TrayState {
             last_pct: initial_pct,
             icon: initial_icon,
-        });
-        let _ = SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(state) as isize);
+            added: false,
+        }));
+        let _ = SetWindowLongPtrW(hwnd, GWLP_USERDATA, st as isize);
 
-        if !add_tray_icon(hwnd) {
-            return;
-        }
-        // 每秒刷新图标 + tooltip
+        // 登录自启时 Explorer 的任务栏常常还没建好，第一次 NIM_ADD 会失败。
+        // 失败不能 return：线程一退出，隐藏窗口和消息循环一起没了，之后既不会重试，
+        // 也收不到 TaskbarCreated——整轮登录都没有托盘图标（进程还在，只是没有入口）。
+        (*st).added = add_tray_icon(hwnd, (*st).icon);
+        // 每秒刷新图标 + tooltip；图标还没加上的那几秒顺带重试 NIM_ADD
         let _ = SetTimer(hwnd, TRAY_TIMER, 1000, None);
 
         let mut msg = MSG::default();
@@ -344,13 +355,12 @@ fn run_tray_thread() {
     }
 }
 
-fn add_tray_icon(hwnd: HWND) -> bool {
+fn add_tray_icon(hwnd: HWND, icon: HICON) -> bool {
     unsafe {
-        let st = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut TrayState;
-        let icon = if st.is_null() {
+        let icon = if icon.is_invalid() {
             LoadIconW(None, IDI_APPLICATION).unwrap_or_default()
         } else {
-            (*st).icon
+            icon
         };
         // 初始 tooltip（与每秒刷新同一份构造，避免两处漂移）
         let tip = build_tip();
@@ -386,10 +396,15 @@ unsafe extern "system" fn wnd_proc(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
-    // Explorer 重启 → 重新添加托盘图标
+    // Explorer 重启 → 重新添加托盘图标；这一拍没成就交给定时器继续重试
     if msg == taskbar_created_msg() {
         delete_tray_icon(hwnd);
-        let _ = add_tray_icon(hwnd);
+        let st = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut TrayState;
+        let icon = if st.is_null() { HICON::default() } else { (*st).icon };
+        let added = add_tray_icon(hwnd, icon);
+        if !st.is_null() {
+            (*st).added = added;
+        }
         return LRESULT(0);
     }
     match msg {
